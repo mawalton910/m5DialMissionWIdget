@@ -191,11 +191,13 @@ enum TrackerState : int {
   ADMIN_MODE,
   WIFI_CONFIG,
   CONFIRM_PLAYERS,
-  RELAY_WAIT_BADGE
+  RELAY_WAIT_BADGE,
+  WAIT_FOR_NPC_TOKEN
 };
 
 const char* stateName(TrackerState s) {
   switch (s) {
+    case WAIT_FOR_NPC_TOKEN:   return "WAIT_FOR_NPC_TOKEN";
     case WAIT_FOR_BADGE:       return "WAIT_FOR_BADGE";
     case WAIT_FOR_MISSION_CARD:return "WAIT_FOR_MISSION_CARD";
     case RUN_MISSION:          return "RUN_MISSION";
@@ -271,7 +273,12 @@ public:
   void applyConfirmPlayersSelection() {
     if (confirmSelection == 0) {
       Serial.printf("[ACTION] %lums  Players confirmed — starting mission\n", millis());
-      startFreeRoamFlow(true);
+      if (currentMode == MODE_STORY_MISSION_WIDGET) {
+        trackerState = WAIT_FOR_MISSION_CARD;
+        displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+      } else {
+        startFreeRoamFlow(true);
+      }
     } else {
       Serial.printf("[ACTION] %lums  Add more players selected\n", millis());
       trackerState = WAIT_FOR_BADGE;
@@ -304,10 +311,14 @@ public:
     displaySplashScreen();
     stateManager.begin();
     logger.begin();
+    storyNpcToken = normalizeRfidToken(stateManager.getStoryNpcToken());
+    if (storyNpcToken.length() > 0 && storyNpcToken != stateManager.getStoryNpcToken()) {
+      stateManager.setStoryNpcToken(storyNpcToken);
+    }
 
     currentMode = (OperationalMode)stateManager.getOperationalMode();
-    if (currentMode != MODE_MISSION_WIDGET && currentMode != MODE_RELAY) {
-      currentMode = MODE_MISSION_WIDGET;
+    if (currentMode != MODE_MISSION_WIDGET && currentMode != MODE_STORY_MISSION_WIDGET && currentMode != MODE_RELAY) {
+      currentMode = STORY_MODE_ON_BOOT ? MODE_STORY_MISSION_WIDGET : MODE_MISSION_WIDGET;
       stateManager.setOperationalMode(currentMode);
     }
     if (currentMode == MODE_RELAY) {
@@ -315,11 +326,12 @@ public:
     } else {
       shutdownWiFi();
     }
-    Serial.printf("[BOOT] %lums  Mode: %s\n", millis(), currentMode == MODE_MISSION_WIDGET ? "Mission Widget" : "Relay");
-    logger.log("Boot: " + String(currentMode == MODE_MISSION_WIDGET ? "Mission" : "Relay"));
+    const char* modeLabel = currentMode == MODE_RELAY ? "Relay" : (currentMode == MODE_STORY_MISSION_WIDGET ? "Story Round" : "Mission Widget");
+    Serial.printf("[BOOT] %lums  Mode: %s\n", millis(), modeLabel);
+    logger.log("Boot: " + String(modeLabel));
 
-    if (currentMode == MODE_MISSION_WIDGET) {
-      trackerState = WAIT_FOR_BADGE;
+    if (currentMode == MODE_MISSION_WIDGET || currentMode == MODE_STORY_MISSION_WIDGET) {
+      trackerState = storyNpcToken.length() > 0 ? WAIT_FOR_BADGE : WAIT_FOR_NPC_TOKEN;
       // Wait on splash logo until boot audio finishes (10s from audio start)
       {
         const unsigned long BOOT_AUDIO_MS = 10000UL;
@@ -329,8 +341,13 @@ public:
           delay(BOOT_AUDIO_MS - elapsed);
         }
       }
-      displayScanBadge();
-      waitingForBadge = true;
+      if (trackerState == WAIT_FOR_NPC_TOKEN) {
+        displayScanNpcToken();
+        waitingForBadge = false;
+      } else {
+        displayScanBadge();
+        waitingForBadge = true;
+      }
     } else {
       trackerState = RELAY_WAIT_BADGE;
       displayRelayBadgePrompt();
@@ -341,6 +358,14 @@ public:
   // restoreFromSavedSnapshot() — power-loss recovery
   // ============================================================
   bool restoreFromSavedSnapshot() {
+    if ((currentMode == MODE_MISSION_WIDGET || currentMode == MODE_STORY_MISSION_WIDGET)
+        && !stateManager.hasStoryNpcToken()) {
+      trackerState = WAIT_FOR_NPC_TOKEN;
+      waitingForBadge = false;
+      displayScanNpcToken();
+      return false;
+    }
+
     String badgeUID, missionCardUID, selectedLocs, restoredLockedDiff;
     int restoredState = WAIT_FOR_BADGE, visitedCount = 0;
     unsigned long restoredStartTime = 0;
@@ -384,7 +409,12 @@ public:
     completionPromptShown = false;
 
     if (trackerState == WAIT_FOR_BADGE)          { waitingForBadge = true; displayScanBadge(); return true; }
-    if (trackerState == WAIT_FOR_MISSION_CARD)   { waitingForBadge = false; startFreeRoamFlow(false); return true; }
+    if (trackerState == WAIT_FOR_MISSION_CARD)   {
+      waitingForBadge = false;
+      if (currentMode == MODE_STORY_MISSION_WIDGET) displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+      else startFreeRoamFlow(false);
+      return true;
+    }
     if (trackerState == RUN_MISSION) {
       waitingForBadge = false;
       if (currentMission) { delete currentMission; currentMission = nullptr; }
@@ -465,6 +495,30 @@ public:
     }
 
     // ── Relay mode ──────────────────────────────────────────
+    // First-run dial assignment. Store the NPC-linked Loot/Item UUID in NVS.
+    if (trackerState == WAIT_FOR_NPC_TOKEN) {
+      String token = normalizeRfidToken(cardUID);
+      if (token.length() == 0) {
+        displayError("INVALID NPC TAG");
+        delay(1500);
+        displayScanNpcToken();
+        return;
+      }
+      storyNpcToken = token;
+      stateManager.setStoryNpcToken(storyNpcToken);
+      stateManager.clearSavedTrackerState();
+      stateManager.clearSavedMissionStart();
+      Serial.printf("[NPC] %lums  Assigned story NPC token: %s\n", millis(), storyNpcToken.c_str());
+      logger.log("NPC token assigned: " + storyNpcToken);
+      playAdminAcceptTone();
+      displayMultiLineMessage("NPC TAG SAVED", storyNpcToken, COLOR_SUCCESS);
+      delay(1200);
+      trackerState = WAIT_FOR_BADGE;
+      waitingForBadge = true;
+      displayScanBadge();
+      return;
+    }
+
     if (trackerState == RELAY_WAIT_BADGE) {
       relayBadgeUID = cardUID;
       Serial.printf("[ACTION] %lums  Relay badge scanned: %s\n", millis(), cardUID.c_str());
@@ -558,7 +612,12 @@ public:
         if (saved >= 0) savedTrackerState = saved;
 
         if (savedTrackerState == WAIT_FOR_MISSION_CARD) {
-          startFreeRoamFlow(false);
+          if (currentMode == MODE_STORY_MISSION_WIDGET) {
+            trackerState = WAIT_FOR_MISSION_CARD;
+            displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+          } else {
+            startFreeRoamFlow(false);
+          }
         } else if (savedTrackerState == RUN_MISSION) {
           trackerState = RUN_MISSION;
           displayMessage(DisplayText::RESUMING_MISSION, COLOR_INFO, 1000);
@@ -586,7 +645,11 @@ public:
 
     // ── B. WAITING FOR MISSION CARD (legacy state) ─────────
     if (trackerState == WAIT_FOR_MISSION_CARD) {
-      startFreeRoamFlow(true);
+      if (currentMode == MODE_STORY_MISSION_WIDGET) {
+        startStoryRoundFlow(true, cardUID);
+      } else {
+        startFreeRoamFlow(true);
+      }
       return;
     }
 
@@ -670,7 +733,7 @@ public:
     // Admin mode button
     if (trackerState == ADMIN_MODE) {
       if (!adminInMenu) {
-        if (adminMenuSelection == 5) { adminInMenu = true; logger.log("Admin: exit tag scan"); displayAdminMode(); }
+        if (adminMenuSelection == 6) { adminInMenu = true; logger.log("Admin: exit tag scan"); displayAdminMode(); }
       } else {
         executeAdminMenuItem();
       }
@@ -695,9 +758,15 @@ public:
     else if (trackerState == RELAY_WAIT_BADGE) {
       Serial.printf("[ACTION] %lums  Switching from Relay to Mission mode\n", millis());
       currentMode = MODE_MISSION_WIDGET; stateManager.setOperationalMode(currentMode);
-      trackerState = WAIT_FOR_BADGE;
       displayMessage("Switched to\\nMission Mode", COLOR_SUCCESS, 1500);
-      displayScanBadge();
+      shutdownWiFi();
+      if (stateManager.hasStoryNpcToken()) {
+        trackerState = WAIT_FOR_BADGE;
+        displayScanBadge();
+      } else {
+        trackerState = WAIT_FOR_NPC_TOKEN;
+        displayScanNpcToken();
+      }
     }
   }
 
@@ -734,9 +803,16 @@ public:
       static int relEnc = M5Dial.Encoder.read();
       if (M5Dial.Encoder.read() - relEnc <= -4) {
         currentMode = MODE_MISSION_WIDGET; stateManager.setOperationalMode(currentMode);
-        trackerState = WAIT_FOR_BADGE;
         displayMessage("Switched to\\nMission Mode", COLOR_SUCCESS, 1500);
-        displayScanBadge(); relEnc = M5Dial.Encoder.read();
+        shutdownWiFi();
+        if (stateManager.hasStoryNpcToken()) {
+          trackerState = WAIT_FOR_BADGE;
+          displayScanBadge();
+        } else {
+          trackerState = WAIT_FOR_NPC_TOKEN;
+          displayScanNpcToken();
+        }
+        relEnc = M5Dial.Encoder.read();
         return;
       }
     }
@@ -749,7 +825,7 @@ public:
         int steps = delta / 4;
         if (adminInMenu) {
           int dir = (steps > 0) ? 1 : -1;
-          for (int i = 0; i < abs(steps); i++) adminMenuSelection = (adminMenuSelection + dir + 7) % 7;
+          for (int i = 0; i < abs(steps); i++) adminMenuSelection = (adminMenuSelection + dir + ADMIN_MENU_ITEMS) % ADMIN_MENU_ITEMS;
           displayAdminMode();
         }
         lastEncoderValue += steps * 4;
@@ -785,6 +861,7 @@ public:
               stateManager.clearMissionStartTime(); stateManager.clearLockedDifficulty();
               completionPromptShown = false;
               playSound(SND_TIMEOUT, SND_TIMEOUT_LEN, 255, "TIMEOUT", EXT_TIMEOUT);
+              drawTimerExpiredAnimation();
               displayMultiLineMessage(DisplayText::TIMEOUT_TITLE, DisplayText::TIMEOUT_ACTION, COLOR_WARNING);
             } else {
               missionLocked = true; awaitingCompletionScan = true;
@@ -792,6 +869,7 @@ public:
               stateManager.setLockedDifficulty(lockedDifficulty);
               completionPromptShown = false;
               playSound(SND_TIMEOUT, SND_TIMEOUT_LEN, 255, "TIMEOUT", EXT_TIMEOUT);
+              drawTimerExpiredAnimation();
               displayMultiLineMessage(DisplayText::COMPLETION_TITLE, DisplayText::COMPLETION_SUBTITLE, COLOR_INFO);
               displayMultiLineMessage(DisplayText::REWARD_LABEL, lockedDifficulty, COLOR_INFO);
             }
@@ -841,14 +919,16 @@ public:
     MI items[] = {
       {"i", TFT_NAVY,      "DEVICE","INFO",   "Serial & MAC address", TFT_CYAN},
       {"M", TFT_DARKGREEN, "MISSION","WIDGET", "Story missions & badges", TFT_GREEN},
+      {"S", TFT_DARKGREEN, "STORY","ROUND", "Shared NPC round mission", TFT_GREEN},
       {"R", TFT_MAROON,    "RELAY","MODE",     "Badge relay updates", TFT_ORANGE},
       {"D", devMode ? TFT_DARKGREEN : TFT_MAROON, "DEV MODE", devMode ? "ON" : "OFF", "GURU_HOME only", devMode ? TFT_GREEN : TFT_RED},
       {"L", 0x2104,        "VIEW","LOG",       "Mission event history", TFT_YELLOW},
       {"?", TFT_DARKCYAN,  "SCAN TAG","INFO",  "Identify any card", TFT_CYAN},
+      {"N", TFT_DARKGREEN, "NPC TAG","RESET",  "Clear saved NPC assignment", TFT_GREEN},
       {"X", TFT_BLACK,     "EXIT","ADMIN",     "Return to Main", TFT_WHITE},
     };
 
-    if (adminMenuSelection == 6) {
+    if (adminMenuSelection == 8) {
       // Exit icon
       M5Dial.Lcd.drawRect(cx - 20, cy - 35, 40, 50, TFT_RED);
       M5Dial.Lcd.drawLine(cx - 20, cy - 10, cx + 20, cy - 10, TFT_RED);
@@ -878,11 +958,22 @@ public:
   }
 
   void exitAdminMode() {
-    Serial.printf("[ACTION] %lums  Exiting admin mode (mode: %s)\n", millis(), currentMode == MODE_MISSION_WIDGET ? "Mission" : "Relay");
+    const char* modeLabel = currentMode == MODE_RELAY ? "Relay" : (currentMode == MODE_STORY_MISSION_WIDGET ? "Story Round" : "Mission");
+    Serial.printf("[ACTION] %lums  Exiting admin mode (mode: %s)\n", millis(), modeLabel);
     adminInMenu = true; adminMenuSelection = 0;
     logger.log("Admin: exit");
-    if (currentMode == MODE_MISSION_WIDGET)   { trackerState = WAIT_FOR_BADGE; displayScanBadge(); }
-    else                                      { trackerState = RELAY_WAIT_BADGE; displayRelayBadgePrompt(); }
+    if (currentMode == MODE_MISSION_WIDGET || currentMode == MODE_STORY_MISSION_WIDGET) {
+      if (stateManager.hasStoryNpcToken()) {
+        trackerState = WAIT_FOR_BADGE;
+        displayScanBadge();
+      } else {
+        trackerState = WAIT_FOR_NPC_TOKEN;
+        displayScanNpcToken();
+      }
+    } else {
+      trackerState = RELAY_WAIT_BADGE;
+      displayRelayBadgePrompt();
+    }
   }
 
   // ============================================================
@@ -957,6 +1048,22 @@ public:
     M5Dial.Display.setTextColor(TFT_WHITE);
     M5Dial.Display.drawString(l1, M5Dial.Display.width() / 2, M5Dial.Display.height() / 2 - 10);
     M5Dial.Display.drawString(l2, M5Dial.Display.width() / 2, M5Dial.Display.height() / 2 + 10);
+  }
+
+  void displayScanNpcToken() {
+    flashScreen(TFT_BLACK);
+    drawStatusIcon(ICON_INFO);
+    drawAlertBorder(TFT_CYAN);
+    drawBadgeIcon(120, 50, 70);
+    M5Dial.Display.setTextDatum(MC_DATUM);
+    M5Dial.Display.setTextSize(2);
+    M5Dial.Display.setTextColor(TFT_CYAN);
+    M5Dial.Display.drawString("ASSIGN DIAL", 120, 135);
+    M5Dial.Display.setTextColor(TFT_WHITE);
+    M5Dial.Display.drawString("SCAN NPC TAG", 120, 165);
+    M5Dial.Display.setTextSize(1);
+    M5Dial.Display.setTextColor(TFT_LIGHTGREY);
+    M5Dial.Display.drawString("Saved until cleared in Admin", 120, 195);
   }
 
   void displayScanBadge() {
@@ -1115,7 +1222,7 @@ public:
     M5Dial.Display.drawString(ser, 20, 85);
     M5Dial.Display.setTextColor(WHITE); M5Dial.Display.drawString("Mode:", 20, 105);
     M5Dial.Display.setTextColor(TFT_CYAN);
-    const char* mn[] = {"Mission Widget","Relay"};
+    const char* mn[] = {"Mission Widget","Relay","Story Round"};
     M5Dial.Display.drawString(mn[(int)currentMode], 90, 105);
     M5Dial.Display.setTextColor(WHITE); M5Dial.Display.drawString("Version:", 20, 125);
     M5Dial.Display.setTextColor(TFT_CYAN); M5Dial.Display.drawString(FIRMWARE_VERSION, 20, 140);
@@ -1287,8 +1394,24 @@ public:
       WiFi.reconnect();
     }
 
+    auto waitForWiFi = [&](const char* phase) {
+      unsigned long startedAt = millis();
+      unsigned long nextStatusAt = startedAt;
+      while (WiFi.status() != WL_CONNECTED && millis() - startedAt < WIFI_CONNECT_TIMEOUT) {
+        if (millis() >= nextStatusAt) {
+          Serial.printf("[WIFI] %lums  %s waiting: status=%d elapsed=%lums\n",
+                        millis(), phase, (int)WiFi.status(), millis() - startedAt);
+          nextStatusAt = millis() + 1000UL;
+        }
+        delay(WIFI_RETRY_DELAY);
+      }
+      Serial.printf("[WIFI] %lums  %s finished: status=%d elapsed=%lums\n",
+                    millis(), phase, (int)WiFi.status(), millis() - startedAt);
+      return WiFi.status() == WL_CONNECTED;
+    };
+
     unsigned long st = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - st < WIFI_CONNECT_TIMEOUT) delay(WIFI_RETRY_DELAY);
+    waitForWiFi("begin");
 
     // One gentle reconnect attempt (no mode toggles/deinit).
     if (WiFi.status() != WL_CONNECTED) {
@@ -1296,7 +1419,7 @@ public:
       logger.log("WiFi retry: reconnect");
       WiFi.reconnect();
       st = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - st < WIFI_CONNECT_TIMEOUT) delay(WIFI_RETRY_DELAY);
+      waitForWiFi("retry");
     }
 
     // Final fallback: single begin retry without forcing driver off/on.
@@ -1305,7 +1428,7 @@ public:
       logger.log("WiFi retry: begin");
       WiFi.begin(ssid.c_str(), password.c_str());
       st = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - st < WIFI_CONNECT_TIMEOUT) delay(WIFI_RETRY_DELAY);
+      waitForWiFi("retry");
     }
 
     if (WiFi.status() == WL_CONNECTED) {
@@ -1512,7 +1635,15 @@ public:
     logger.clearLog();
     displayMessage(DisplayText::MEMORY_CLEARED, COLOR_WARNING, 2000);
     displaySplashScreen();
-    trackerState = WAIT_FOR_BADGE; waitingForBadge = true; displayScanBadge();
+    storyNpcToken = "";
+    if (currentMode == MODE_RELAY) {
+      trackerState = RELAY_WAIT_BADGE;
+      displayRelayBadgePrompt();
+    } else {
+      trackerState = WAIT_FOR_NPC_TOKEN;
+      waitingForBadge = false;
+      displayScanNpcToken();
+    }
   }
 
   void reset(bool bypassCooldown = true) {
@@ -1523,11 +1654,21 @@ public:
     currentBadgeUID = ""; currentMissionCardUID = "";
     lastCompletedBadgeUIDs.clear(); lastCompletedMissionCardUID = "";
     badgeCooldownMap.clear();
+    String assignedNpcToken = stateManager.getStoryNpcToken();
     stateManager.clearAll(); stateManager.clearCompletedBadges();
+    if (assignedNpcToken.length() > 0) stateManager.setStoryNpcToken(assignedNpcToken);
     stateManager.setSelectedLocations(""); stateManager.setVisitedCount(0);
     displayMessage(DisplayText::RESETTING, COLOR_INFO, 500);
-    displaySplashScreen(); displayScanBadge();
-    trackerState = WAIT_FOR_BADGE;
+    displaySplashScreen();
+    if (assignedNpcToken.length() > 0) {
+      storyNpcToken = normalizeRfidToken(assignedNpcToken);
+      trackerState = WAIT_FOR_BADGE;
+      displayScanBadge();
+    } else {
+      storyNpcToken = "";
+      trackerState = WAIT_FOR_NPC_TOKEN;
+      displayScanNpcToken();
+    }
   }
 
   bool isBadgeAlreadyCompleted(String uid) {
@@ -1598,6 +1739,7 @@ private:
 
   String relayBadgeUID;
   String relayLastResponse;
+  String storyNpcToken;
   bool relayLastSuccess = false;
   unsigned long lastActivityMs = 0;
   unsigned long lastWiFiReconnectAttemptMs = 0;
@@ -1612,6 +1754,15 @@ private:
   // ── Private helpers ──────────────────────────────────────
 
   static String removeSpaces(String s) { s.replace(" ",""); return s; }
+
+  static String normalizeRfidToken(String token) {
+    token.trim();
+    token.replace(" ", "");
+    token.replace("-", "");
+    token.replace(":", "");
+    token.toUpperCase();
+    return token;
+  }
 
   void persistPlayerList() {
     String csv;
@@ -1630,16 +1781,196 @@ private:
     currentMission->updateDisplay();
   }
 
-  void startFreeRoamFlow(bool showSplash) {
-    currentMissionCardUID = "AUTO_FREE_ROAM";
-    Serial.printf("[ACTION] %lums  Starting Free Roam (auto-start)\n", millis());
-    playSound(SND_MISSION_START, SND_MISSION_START_LEN, 255, "MISSION_START", EXT_MISSION_START);
-    if (showSplash) {
-      drawMissionStartingScreen();
-      delay(1600);
+  String normalizeStoryPoiName(String value) {
+    value.toLowerCase();
+    String normalized;
+    for (size_t i = 0; i < value.length(); i++) {
+      char c = value[i];
+      if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) normalized += c;
     }
+    return normalized;
+  }
+
+  int findStoryPoiIndex(const String& name) {
+    String wanted = normalizeStoryPoiName(name);
+    for (int i = 0; i < TOTAL_LOCATIONS; i++) {
+      if (wanted == normalizeStoryPoiName(String(LOCATION_NAMES[i]))) return i;
+      if (wanted == normalizeStoryPoiName(String(POI_LOCATIONS[i].name))) return i;
+    }
+    return -1;
+  }
+
+  void startStoryRoundFlow(bool showSplash, const String& missionUuid) {
+    // Mission Widget keeps the Free Roam presentation, but the assigned NPC
+    // token selects the server-generated shared mission for the active round.
+    const bool automaticFreeRoam = currentMode == MODE_MISSION_WIDGET;
+    if (playerCount == 0) {
+      displayError("NO PLAYERS");
+      delay(1500);
+      displayScanBadge();
+      return;
+    }
+
+    if (automaticFreeRoam) {
+      Serial.printf("[FREE ROAM] %lums  Requesting current NPC round mission\n", millis());
+    } else {
+      Serial.printf("[STORY] %lums  Requesting shared round mission for UUID %s\n", millis(), missionUuid.c_str());
+    }
+
+    // Build and log the complete request before WiFi so connection failures do
+    // not hide what the dial intended to send.
+    DynamicJsonDocument request(4096);
+    request["mac_address"] = DEVICE_MAC_ADDR;
+    request["serial_number"] = DEVICE_SERIAL_NUM;
+    request["game_id"] = DEVICE_GAME_ID;
+    if (missionUuid.length() > 0) {
+      request["mission_uuid"] = missionUuid;
+      request["source_uuid"] = missionUuid;
+    }
+    request["npc_id"] = STORY_NPC_ID;
+    JsonArray players = request.createNestedArray("player_uuids");
+    for (int i = 0; i < playerCount; i++) players.add(removeSpaces(playerUUIDs[i]));
+    String payload;
+    serializeJson(request, payload);
+    Serial.printf("[STORY JSON REQUEST] %s\n", payload.c_str());
+    Serial.printf("[STORY TARGET] %s\n", STORY_ROUND_ENDPOINT);
+
+    if (showSplash) {
+      Serial.printf("[STORY] %lums  Showing mission start screen\n", millis());
+      drawMissionStartingScreen();
+      delay(900);
+    }
+    Serial.printf("[STORY] %lums  Connecting to WiFi for round manifest\n", millis());
+    if (!connectToWiFi()) {
+      displayError(DisplayText::WIFI_FAILED);
+      delay(1500);
+      if (automaticFreeRoam) displayScanBadge();
+      else displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+      shutdownWiFi();
+      return;
+    }
+
+    Serial.printf("[STORY] %lums  Sending previously logged JSON request\n", millis());
+
+    HTTPClient http;
+    http.setTimeout(HTTP_TIMEOUT);
+    http.setConnectTimeout(HTTP_TIMEOUT);
+    http.begin(STORY_ROUND_ENDPOINT);
+    http.addHeader("Content-Type", "application/json");
+    unsigned long requestStartedAt = millis();
+    int code = http.POST(payload);
+    String response = code > 0 ? http.getString() : "";
+    http.end();
+
+    Serial.printf("[STORY] %lums  Manifest response HTTP %d in %lums (%d bytes)\n",
+                  millis(), code, millis() - requestStartedAt, response.length());
+    if (response.length() > 0) {
+      Serial.printf("[STORY] Response body: %s\n", response.c_str());
+    }
+    if (code < 0) {
+      Serial.printf("[STORY] HTTP error detail: %s\n", HTTPClient::errorToString(code).c_str());
+      logNetworkSnapshot("Story round POST failure", STORY_ROUND_ENDPOINT);
+    }
+    if (code != 200) {
+      String serverCode;
+      String serverMessage;
+      if (response.length() > 0) {
+        DynamicJsonDocument errorBody(2048);
+        if (!deserializeJson(errorBody, response)) {
+          serverCode = errorBody["code"].as<String>();
+          serverMessage = errorBody["message"].as<String>();
+        }
+      }
+      Serial.printf("[STORY] Server rejection: %s | %s\n", serverCode.c_str(), serverMessage.c_str());
+      logger.log(String(automaticFreeRoam ? "Free roam round manifest failed HTTP " : "Story manifest failed HTTP ") + String(code));
+      if (serverCode == "NO_ACTIVE_ROUND") displayError("NO ACTIVE ROUND");
+      else if (serverCode == "STORY_MISSION_NOT_READY") displayError("MISSION NOT READY");
+      else if (serverCode == "STORY_NPC_NOT_CONFIGURED") displayError("NPC NOT LINKED");
+      else if (serverCode == "MISSION_UUID_NOT_FOUND") displayError("NPC TAG NOT FOUND");
+      else if (serverCode == "STORY_MISSION_POI_COUNT_MISMATCH") displayError("NEED 4 POIS");
+      else if (code == 404) displayError("DEVICE OR ROUTE NOT FOUND");
+      else if (code == 409) displayError("ROUND NOT READY");
+      else displayError("STORY FETCH FAILED");
+      delay(1800);
+      if (automaticFreeRoam) displayScanBadge();
+      else displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+      shutdownWiFi();
+      return;
+    }
+
+    DynamicJsonDocument manifest(32768);
+    DeserializationError parseError = deserializeJson(manifest, response);
+    if (parseError || !manifest["ok"].as<bool>()) {
+      Serial.printf("[STORY] Manifest parse/error: %s\n", parseError ? parseError.c_str() : "ok=false");
+      logger.log("Story manifest parse failed");
+      displayError("BAD STORY DATA");
+      delay(1800);
+      if (automaticFreeRoam) displayScanBadge();
+      else displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+      shutdownWiFi();
+      return;
+    }
+
+    JsonArray pois = manifest["pois"].as<JsonArray>();
+    if (pois.size() != REQUIRED_LOCATIONS) {
+      Serial.printf("[STORY] Expected %d POIs, received %d\n", REQUIRED_LOCATIONS, pois.size());
+      displayError("NEED 4 POIS");
+      delay(1800);
+      if (automaticFreeRoam) displayScanBadge();
+      else displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+      shutdownWiFi();
+      return;
+    }
+
+    String selected = "v2|S=";
+    for (size_t i = 0; i < pois.size(); i++) {
+      if (i > 0) selected += ",";
+      String poiName = pois[i]["name"].as<String>();
+      int localIndex = findStoryPoiIndex(poiName);
+      if (localIndex < 0) {
+        Serial.printf("[STORY] POI is not mapped on this dial: %s\n", poiName.c_str());
+        displayError("POI NOT ON DIAL");
+        delay(1800);
+        if (automaticFreeRoam) displayScanBadge();
+        else displayMultiLineMessage("STORY ROUND", "SCAN MISSION UUID", COLOR_INFO);
+        shutdownWiFi();
+        return;
+      }
+      selected += String(localIndex);
+      Serial.printf("[STORY] POI %d: %s -> local %d\n", (int)i + 1, poiName.c_str(), localIndex);
+    }
+    selected += "|V=0,0,0,0";
+    stateManager.setSelectedLocations(selected);
+    String resolvedMissionId = manifest["mission"]["id"].as<String>();
+    String roundKey = manifest["round"]["round_key"].as<String>();
+    currentMissionCardUID = missionUuid.length() > 0 ? missionUuid : resolvedMissionId;
+    logger.log(String(automaticFreeRoam ? "Free roam loaded story round " : "Story round ") + roundKey);
+    String returnedMissionName = manifest["mission"]["name"].as<String>();
+    String returnedNpcName = manifest["source"]["npc_name"].as<String>();
+    Serial.printf("[%s] Mission: %s | NPC: %s | Round: %s\n",
+                  automaticFreeRoam ? "FREE ROAM" : "STORY",
+                  returnedMissionName.c_str(), returnedNpcName.c_str(),
+                  roundKey.c_str());
+
+    shutdownWiFi();
+    playSound(SND_MISSION_START, SND_MISSION_START_LEN, 255, "MISSION_START", EXT_MISSION_START);
     startMission(new FreeRoamMission(stateManager), nullptr);
-    logger.log("Free Roam mission started (auto)");
+  }
+
+  void startFreeRoamFlow(bool showSplash) {
+    // Keep Free Roam's display and gameplay, but seed it from this dial's
+    // one-time NPC assignment and the shared mission for the active round.
+    String token = normalizeRfidToken(stateManager.getStoryNpcToken());
+    if (token.length() == 0) {
+      Serial.printf("[NPC] %lums  No story NPC token assigned\n", millis());
+      trackerState = WAIT_FOR_NPC_TOKEN;
+      waitingForBadge = false;
+      displayScanNpcToken();
+      return;
+    }
+    storyNpcToken = token;
+    Serial.printf("[ACTION] %lums  Starting Free Roam for NPC token %s\n", millis(), storyNpcToken.c_str());
+    startStoryRoundFlow(showSplash, storyNpcToken);
   }
 
   void startMissionTimer() {
@@ -1656,27 +1987,83 @@ private:
       case 0: displayDeviceInfo(); logger.log("Admin: device info"); break;
       case 1:
         currentMode = MODE_MISSION_WIDGET; stateManager.setOperationalMode(currentMode);
-        trackerState = WAIT_FOR_BADGE;
         displayMessage("Switched to\\nMission Mode", COLOR_SUCCESS, 1500);
-        logger.log("Admin: Mission Widget"); displayScanBadge(); break;
+        logger.log("Admin: Mission Widget");
+        exitAdminMode();
+        break;
       case 2:
+        currentMode = MODE_STORY_MISSION_WIDGET; stateManager.setOperationalMode(currentMode);
+        displayMessage("Switched to\\nStory Round", COLOR_SUCCESS, 1500);
+        logger.log("Admin: Story Round");
+        exitAdminMode();
+        break;
+      case 3:
         currentMode = MODE_RELAY; stateManager.setOperationalMode(currentMode);
         trackerState = RELAY_WAIT_BADGE;
         displayMessage("Switched to\\nRelay Mode", COLOR_SUCCESS, 1500);
         logger.log("Admin: Relay"); displayRelayBadgePrompt(); break;
-      case 3:
+      case 4:
         devMode = !devMode;
         displayMessage(devMode ? DisplayText::ADMIN_DEV_MODE_ON : DisplayText::ADMIN_DEV_MODE_OFF,
                        devMode ? COLOR_SUCCESS : COLOR_INFO, 1500);
         logger.log("Admin: devMode=" + String(devMode));
         displayAdminMode(); break;
-      case 4:
+      case 5:
         adminInMenu = false; logger.log("Admin: view log");
         displayLogFile(); adminInMenu = true; displayAdminMode(); break;
-      case 5:
+      case 6:
         adminInMenu = false; logger.log("Admin: scan tag");
         displayMessage("Scan Any Tag", COLOR_INFO, 0); break;
-      case 6: exitAdminMode(); break;
+      case 7:
+        stateManager.clearStoryNpcToken();
+        storyNpcToken = "";
+        logger.log("Admin: NPC token cleared");
+        displayMessage("NPC TAG\nCLEARED", COLOR_WARNING, 1500);
+        trackerState = WAIT_FOR_NPC_TOKEN;
+        adminInMenu = true;
+        displayScanNpcToken();
+        break;
+      case 8: exitAdminMode(); break;
+    }
+  }
+
+  void drawTimerExpiredAnimation() {
+    static M5Canvas canvas(&M5Dial.Display);
+    static bool ready = false;
+    if (!ready) { canvas.createSprite(240, 140); ready = true; }
+
+    const int cx = 120;
+    const int barX = 20;
+    const int barY = 112;
+    const int barW = 200;
+    const int segments = 10;
+    const int gap = 3;
+    const int segmentW = (barW - (segments - 1) * gap) / segments;
+
+    for (int frame = 0; frame < 10; frame++) {
+      canvas.fillSprite((frame % 2) ? TFT_BLACK : TFT_MAROON);
+      canvas.setTextDatum(MC_DATUM);
+      canvas.setTextColor(TFT_RED);
+      canvas.setTextSize(2);
+      canvas.drawString("HEALTH DEPLETED", cx, 25);
+
+      canvas.setTextColor(TFT_WHITE);
+      canvas.setTextSize(5);
+      canvas.drawString("0:00", cx, 67);
+
+      canvas.setTextColor((frame % 2) ? TFT_ORANGE : TFT_YELLOW);
+      canvas.setTextSize(2);
+      canvas.drawString("TIME EXPIRED", cx, 94);
+
+      for (int i = 0; i < segments; i++) {
+        int x = barX + i * (segmentW + gap);
+        canvas.drawRoundRect(x, barY, segmentW, 10, 2, TFT_RED);
+      }
+      canvas.drawRoundRect(5 + (frame % 2), 5 + (frame % 2),
+                          230 - (frame % 2) * 2, 130 - (frame % 2) * 2,
+                          8, (frame % 2) ? TFT_ORANGE : TFT_RED);
+      canvas.pushSprite(0, 0);
+      delay(90);
     }
   }
 
@@ -1688,16 +2075,33 @@ private:
     static M5Canvas canvas(&M5Dial.Display);
     static bool ready = false;
     if (!ready) { canvas.createSprite(240, 140); ready = true; }
-    if (rem < 60000 && (now / 500) % 2 == 0) canvas.fillSprite(TFT_RED); else canvas.fillSprite(TFT_BLACK);
+    bool critical = rem <= 60000UL;
+    bool urgent = rem <= 10000UL;
+    bool pulse = urgent && ((now / 250UL) % 2UL == 0UL);
+    float ratio = (MISSION_TIMEOUT_MS > 0UL) ? ((float)rem / (float)MISSION_TIMEOUT_MS) : 0.0f;
+    canvas.fillSprite(pulse ? TFT_MAROON : TFT_BLACK);
     canvas.setTextDatum(MC_DATUM);
-    canvas.setTextSize(2); canvas.setTextColor(TFT_YELLOW);
+    uint16_t healthColor = (ratio > 0.50f) ? TFT_GREEN : ((ratio > 0.25f) ? TFT_ORANGE : TFT_RED);
+    canvas.setTextSize(2); canvas.setTextColor(healthColor);
     canvas.drawString(DisplayText::TIMER_TITLE, 120, 25);
-    canvas.setTextSize(5); canvas.drawString(String(ts), 120, 70);
-    if (rem < 60000) { canvas.setTextColor(TFT_WHITE); canvas.setTextSize(2); canvas.drawString(DisplayText::TIMER_HURRY, 120, 110); }
-    int bw = 200, bx = 20, by2 = 120;
-    float ratio = (float)rem / (float)MISSION_TIMEOUT_MS;
-    canvas.drawRect(bx, by2, bw, 10, TFT_WHITE);
-    canvas.fillRect(bx+1, by2+1, max(0, (int)(bw * ratio) - 2), 8, rem < 60000 ? TFT_RED : TFT_GREEN);
+    canvas.setTextSize(5); canvas.setTextColor(critical ? healthColor : TFT_WHITE);
+    canvas.drawString(String(ts), 120, 67);
+    if (critical) {
+      canvas.setTextColor(urgent ? (pulse ? TFT_WHITE : TFT_YELLOW) : TFT_ORANGE);
+      canvas.setTextSize(2);
+      canvas.drawString(urgent ? "FINAL WARNING" : DisplayText::TIMER_HURRY, 120, 91);
+    }
+
+    int bx = 20, by2 = 116;
+    int filledSegments = (int)(10.0f * ratio + 0.999f);
+    if (filledSegments > 10) filledSegments = 10;
+    for (int i = 0; i < 10; i++) {
+      int sx = bx + i * 20;
+      uint16_t segmentColor = (i < filledSegments) ? healthColor : TFT_DARKGREY;
+      canvas.fillRoundRect(sx, by2, 17, 10, 2, segmentColor);
+      canvas.drawRoundRect(sx, by2, 17, 10, 2, TFT_WHITE);
+    }
+    if (urgent) canvas.drawRoundRect(14, 108, 212, 26, 5, pulse ? TFT_WHITE : TFT_RED);
     canvas.pushSprite(0, 0);
   }
 };

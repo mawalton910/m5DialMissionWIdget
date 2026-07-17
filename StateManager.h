@@ -45,6 +45,7 @@ public:
     const char* KEY_WIFI_SSID = "wifi_ssid";
     const char* KEY_WIFI_PASSWORD = "wifi_password";
     const char* KEY_OPERATIONAL_MODE = "op_mode";
+    const char* KEY_STORY_NPC_TOKEN = "story_npc_tag";
     // ...existing code...
     
     void clearAll() {
@@ -195,6 +196,23 @@ public:
     
     int getOperationalMode() {
         return prefs.getInt(KEY_OPERATIONAL_MODE, 0); // Default to MODE_MISSION_WIDGET (0)
+    }
+
+    // One-time NPC assignment. This survives normal mission/session resets.
+    void setStoryNpcToken(const String& token) {
+        prefs.putString(KEY_STORY_NPC_TOKEN, token.c_str());
+    }
+
+    String getStoryNpcToken() {
+        return prefs.getString(KEY_STORY_NPC_TOKEN, "");
+    }
+
+    bool hasStoryNpcToken() {
+        return getStoryNpcToken().length() > 0;
+    }
+
+    void clearStoryNpcToken() {
+        prefs.remove(KEY_STORY_NPC_TOKEN);
     }
     
     void end() {
