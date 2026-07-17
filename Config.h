@@ -8,14 +8,19 @@
 // ===== OPERATIONAL MODES =====
 // Device can operate in two modes, switchable via admin menu
 enum OperationalMode {
-    MODE_MISSION_WIDGET,   // POI Story mission system (default on boot)
-    MODE_RELAY             // Simple badge relay/load testing
+    MODE_MISSION_WIDGET = 0,       // Shared NPC story mission using the assigned tag
+    MODE_RELAY = 1,                // Preserve the original persisted Relay value
+    MODE_STORY_MISSION_WIDGET = 2  // Manual mission-token scan compatibility mode
 };
+
+// Set true for a firmware build dedicated to the shared NPC story-round dial.
+// False preserves the current local/random mission behavior.
+const bool STORY_MODE_ON_BOOT = false;
 
 // ===== ADMIN CONFIGURATION =====
 #define ADMIN_BUTTON_HOLD_TIME 10000     // Hold button for 10 seconds to enter admin
 #define ADMIN_EXIT_TIMEOUT 30000        // Auto-exit after 30s inactivity
-#define ADMIN_MENU_ITEMS 6              // Number of admin menu items (Device Info, Mission, Relay, Dev Mode, Scan Tag, Exit)
+#define ADMIN_MENU_ITEMS 9              // Device Info, Mission, Story Round, Relay, Dev Mode, Log, Scan Tag, NPC Tag, Exit
 #define ADMIN_MENU_SCROLL_DELAY 100     // Scroll delay in ms
 
 // ===== DEVICE CONFIGURATION =====
