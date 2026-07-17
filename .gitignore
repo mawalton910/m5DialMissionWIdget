@@ -1,2 +1,5 @@
 **/build/*
 !**/build/update.ino.bin
+
+# S4: Never commit secrets — contains WiFi passwords, API keys, device identifiers
+secrets.h
