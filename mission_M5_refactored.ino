@@ -309,6 +309,68 @@ public:
   void setSavedMissionCardUID(const String& v) { savedMissionCardUID = v; }
   void setAwaitingBadgeRestore(bool v) { awaitingBadgeRestore = v; }
 
+  // ---- Debug helpers for Serial Monitor command emulation ----
+  void debugReset() {
+    reset();
+  }
+
+  void debugClearNpcAssignment() {
+    stateManager.clearStoryNpcToken();
+    stateManager.clearStoryNpcName();
+    storyNpcToken = "";
+    storyNpcName = "";
+    if (currentMode != MODE_RELAY) {
+      trackerState = WAIT_FOR_NPC_TOKEN;
+      waitingForBadge = false;
+      displayScanNpcToken();
+    }
+  }
+
+  bool debugSetMode(const String& modeUpper) {
+    if (modeUpper == "MISSION") {
+      currentMode = MODE_MISSION_WIDGET;
+      stateManager.setOperationalMode(currentMode);
+      shutdownWiFi();
+      if (stateManager.hasStoryNpcToken()) {
+        trackerState = WAIT_FOR_BADGE;
+        waitingForBadge = true;
+        displayScanBadge();
+      } else {
+        trackerState = WAIT_FOR_NPC_TOKEN;
+        waitingForBadge = false;
+        displayScanNpcToken();
+      }
+      return true;
+    }
+
+    if (modeUpper == "STORY") {
+      currentMode = MODE_STORY_MISSION_WIDGET;
+      stateManager.setOperationalMode(currentMode);
+      shutdownWiFi();
+      if (stateManager.hasStoryNpcToken()) {
+        trackerState = WAIT_FOR_BADGE;
+        waitingForBadge = true;
+        displayScanBadge();
+      } else {
+        trackerState = WAIT_FOR_NPC_TOKEN;
+        waitingForBadge = false;
+        displayScanNpcToken();
+      }
+      return true;
+    }
+
+    if (modeUpper == "RELAY") {
+      currentMode = MODE_RELAY;
+      stateManager.setOperationalMode(currentMode);
+      trackerState = RELAY_WAIT_BADGE;
+      waitingForBadge = false;
+      displayRelayBadgePrompt();
+      return true;
+    }
+
+    return false;
+  }
+
   // ---- Activity / screen timeout ----
   void bumpActivity() {
     lastActivityMs = millis();
@@ -2497,6 +2559,9 @@ void printSerialCommandHelp() {
   Serial.println("  HELP                - show commands");
   Serial.println("  STATE               - print tracker state");
   Serial.println("  BTN                 - simulate button press");
+  Serial.println("  RESET               - reset to badge/NPC flow");
+  Serial.println("  NPCCLEAR            - clear saved NPC assignment");
+  Serial.println("  MODE:<name>         - set mode MISSION|STORY|RELAY");
   Serial.println("  SCAN:<uid>          - simulate RFID scan");
   Serial.println("  Examples: SCAN:FAAC1307 | SCAN: FA AC 13 07");
 }
@@ -2525,6 +2590,34 @@ void handleSerialCommand(String line) {
   if (upper == "BTN") {
     Serial.println("[SERIAL CMD] Simulating button press");
     tracker.handleButtonPress();
+    tracker.bumpActivity();
+    return;
+  }
+
+  if (upper == "RESET") {
+    Serial.println("[SERIAL CMD] Running reset");
+    tracker.debugReset();
+    tracker.bumpActivity();
+    return;
+  }
+
+  if (upper == "NPCCLEAR") {
+    Serial.println("[SERIAL CMD] Clearing NPC assignment");
+    tracker.debugClearNpcAssignment();
+    tracker.bumpActivity();
+    return;
+  }
+
+  int modeSep = upper.indexOf("MODE:");
+  if (modeSep == 0) {
+    String modeName = upper.substring(5);
+    modeName.trim();
+    if (tracker.debugSetMode(modeName)) {
+      Serial.printf("[SERIAL CMD] Mode set to %s\n", modeName.c_str());
+    } else {
+      Serial.printf("[SERIAL CMD] Invalid MODE: %s\n", modeName.c_str());
+      Serial.println("[SERIAL CMD] Use MODE:MISSION | MODE:STORY | MODE:RELAY");
+    }
     tracker.bumpActivity();
     return;
   }
