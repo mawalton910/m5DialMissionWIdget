@@ -2471,6 +2471,82 @@ StoryTracker tracker;
 unsigned long buttonPressStartTime = 0;
 bool buttonHeldForAdmin = false;
 
+String formatUidForScan(String raw) {
+  raw.trim();
+  raw.toUpperCase();
+
+  String hex;
+  for (int i = 0; i < (int)raw.length(); i++) {
+    char c = raw[i];
+    bool isHex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F');
+    if (isHex) hex += c;
+  }
+
+  if (hex.length() < 2 || (hex.length() % 2) != 0) return "";
+
+  String spaced;
+  for (int i = 0; i < (int)hex.length(); i += 2) {
+    spaced += " ";
+    spaced += hex.substring(i, i + 2);
+  }
+  return spaced;
+}
+
+void printSerialCommandHelp() {
+  Serial.println("[SERIAL CMD] Commands:");
+  Serial.println("  HELP                - show commands");
+  Serial.println("  STATE               - print tracker state");
+  Serial.println("  BTN                 - simulate button press");
+  Serial.println("  SCAN:<uid>          - simulate RFID scan");
+  Serial.println("  Examples: SCAN:FAAC1307 | SCAN: FA AC 13 07");
+}
+
+void handleSerialCommand(String line) {
+  line.trim();
+  if (line.length() == 0) return;
+
+  String upper = line;
+  upper.toUpperCase();
+
+  if (upper == "HELP") {
+    printSerialCommandHelp();
+    return;
+  }
+
+  if (upper == "STATE") {
+    Serial.printf("[SERIAL CMD] state=%s mode=%d players=%d mission=%s\n",
+                  stateName(tracker.trackerState),
+                  (int)tracker.currentMode,
+                  tracker.getPlayerCount(),
+                  tracker.getCurrentMission() ? "yes" : "no");
+    return;
+  }
+
+  if (upper == "BTN") {
+    Serial.println("[SERIAL CMD] Simulating button press");
+    tracker.handleButtonPress();
+    tracker.bumpActivity();
+    return;
+  }
+
+  int scanSep = upper.indexOf("SCAN:");
+  if (scanSep == 0) {
+    String rawUid = line.substring(5);
+    String uid = formatUidForScan(rawUid);
+    if (uid.length() == 0) {
+      Serial.println("[SERIAL CMD] Invalid SCAN UID format. Use hex bytes.");
+      return;
+    }
+    Serial.printf("[SERIAL CMD] Simulating scan: %s\n", uid.c_str());
+    tracker.processCardScan(uid);
+    tracker.bumpActivity();
+    return;
+  }
+
+  Serial.printf("[SERIAL CMD] Unknown command: %s\n", line.c_str());
+  printSerialCommandHelp();
+}
+
 void setup() {
   auto cfg = M5.config();
   M5Dial.begin(cfg, true, true);
@@ -2544,6 +2620,7 @@ void setup() {
   Serial.printf("[BOOT] before restoreFromSavedSnapshot heap=%u\n", (unsigned)ESP.getFreeHeap());
   tracker.restoreFromSavedSnapshot();
   Serial.printf("[BOOT] after restoreFromSavedSnapshot heap=%u\n", (unsigned)ESP.getFreeHeap());
+  printSerialCommandHelp();
   tracker.bumpActivity();
 }
 
@@ -2604,6 +2681,21 @@ void loop() {
       }
     } else if (tracker.trackerState == WAIT_FOR_BADGE && tracker.getPlayerCount() > 0) {
       tracker.advanceFromBadgeScreen(); delay(300);
+    }
+  }
+
+  // Serial Monitor command emulation (non-blocking)
+  {
+    static String serialLine;
+    while (Serial.available() > 0) {
+      char c = (char)Serial.read();
+      if (c == '\r') continue;
+      if (c == '\n') {
+        handleSerialCommand(serialLine);
+        serialLine = "";
+      } else if (serialLine.length() < 160) {
+        serialLine += c;
+      }
     }
   }
 
