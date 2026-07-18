@@ -13,6 +13,15 @@ enum OperationalMode {
     MODE_STORY_MISSION_WIDGET = 2  // Manual mission-token scan compatibility mode
 };
 
+enum UITheme {
+  THEME_GENERAL = 0,
+  THEME_VAULT = 1
+};
+
+// Keep THEME_GENERAL for the existing look.
+// THEME_VAULT applies the Fallout-inspired orange palette and animation accents.
+const UITheme ACTIVE_UI_THEME = THEME_VAULT;
+
 // Set true for a firmware build dedicated to the shared NPC story-round dial.
 // False preserves the current local/random mission behavior.
 const bool STORY_MODE_ON_BOOT = false;

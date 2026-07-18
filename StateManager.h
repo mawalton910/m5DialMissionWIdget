@@ -46,6 +46,8 @@ public:
     const char* KEY_WIFI_PASSWORD = "wifi_password";
     const char* KEY_OPERATIONAL_MODE = "op_mode";
     const char* KEY_STORY_NPC_TOKEN = "story_npc_tag";
+    const char* KEY_STORY_NPC_NAME = "story_npc_name";
+    const char* KEY_ACTIVE_MISSION_NAME = "mission_name";
     // ...existing code...
     
     void clearAll() {
@@ -213,6 +215,30 @@ public:
 
     void clearStoryNpcToken() {
         prefs.remove(KEY_STORY_NPC_TOKEN);
+    }
+
+    void setStoryNpcName(const String& name) {
+        prefs.putString(KEY_STORY_NPC_NAME, name.c_str());
+    }
+
+    String getStoryNpcName() {
+        return prefs.getString(KEY_STORY_NPC_NAME, "");
+    }
+
+    void clearStoryNpcName() {
+        prefs.remove(KEY_STORY_NPC_NAME);
+    }
+
+    void setActiveMissionName(const String& missionName) {
+        prefs.putString(KEY_ACTIVE_MISSION_NAME, missionName.c_str());
+    }
+
+    String getActiveMissionName() {
+        return prefs.getString(KEY_ACTIVE_MISSION_NAME, "");
+    }
+
+    void clearActiveMissionName() {
+        prefs.remove(KEY_ACTIVE_MISSION_NAME);
     }
     
     void end() {

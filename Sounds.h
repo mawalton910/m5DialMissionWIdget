@@ -73,17 +73,15 @@ const Note SND_BADGE_SCAN[] = {
 // MISSION CARD SCANNED — 5-note power sweep C4 -> C6
 // ---------------------------------------------------------------------------
 const Note SND_MISSION_START[] = {
-  {220, 200}, // A3 200ms
-  {0, 50},    // REST 50ms
-  {220, 100}, // A3 100ms
-  {262, 100}, // C4 100ms
-  {294, 200}, // D4 200ms
-  {0, 50},    // REST 50ms
-  {294, 100}, // D4 100ms
-  {349, 100}, // F4 100ms
-  {392, 300}, // G4 300ms
-  {0, 100},   // REST 100ms
-  {440, 400}, // A4 400ms
+  {523, 70},   // C5
+  {659, 70},   // E5
+  {784, 90},   // G5
+  {988, 110},  // B5
+  {1046, 220}, // C6
+  {0, 45},     // REST
+  {784, 60},   // G5
+  {988, 60},   // B5
+  {1046, 260}, // C6
 };
 #define SND_MISSION_START_LEN (sizeof(SND_MISSION_START) / sizeof(Note))
 

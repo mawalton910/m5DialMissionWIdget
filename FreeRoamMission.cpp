@@ -24,6 +24,16 @@ static String sanitizeMissionDisplayName(String name) {
     return name;
 }
 
+static String sanitizeMissionHeaderName(String name) {
+    name = sanitizeMissionDisplayName(name);
+    int roundSuffix = name.indexOf(" - Round ");
+    if (roundSuffix > 0) {
+        name = name.substring(0, roundSuffix);
+        name.trim();
+    }
+    return name;
+}
+
 String FreeRoamMission::displayNameForSpot(int spotIndex) const {
     if (spotIndex >= 0 && spotIndex < REQUIRED_LOCATIONS && missionDisplayNames[spotIndex][0] != '\0') {
         return String(missionDisplayNames[spotIndex]);
@@ -401,6 +411,7 @@ void FreeRoamMission::updateDisplay() {
     browseIndex = constrain(browseIndex, 0, count - 1);
     bool isVisited = missionSpotVisited[browseIndex];
     String poiName  = displayNameForSpot(browseIndex);
+    String missionHeader = sanitizeMissionHeaderName(stateManager.getActiveMissionName());
 
     M5Dial.Lcd.fillScreen(TFT_BLACK);
     M5Dial.Display.setTextDatum(MC_DATUM);
@@ -465,15 +476,21 @@ void FreeRoamMission::updateDisplay() {
         M5Dial.Display.drawString("[ VISITED ]", cx, M5Dial.Display.height() - 33);
 
     } else {
-        M5Dial.Display.setTextSize(3);
+        String headerLabel = missionHeader.length() > 0 ? missionHeader : String("SCAN");
+        int headerSize = headerLabel.length() > 9 ? 2 : 3;
+        M5Dial.Display.setTextSize(headerSize);
+        while (headerSize > 1 && M5Dial.Display.textWidth(headerLabel) > maxW) {
+            headerSize--;
+            M5Dial.Display.setTextSize(headerSize);
+        }
         for (int ox = -1; ox <= 1; ox++)
             for (int oy = -1; oy <= 1; oy++)
                 if (ox != 0 || oy != 0) {
                     M5Dial.Display.setTextColor(TFT_WHITE);
-                    M5Dial.Display.drawString("SCAN", cx + ox, 72 + oy);
+                    M5Dial.Display.drawString(headerLabel, cx + ox, 72 + oy);
                 }
         M5Dial.Display.setTextColor(TFT_ORANGE);
-        M5Dial.Display.drawString("SCAN", cx, 72);
+        M5Dial.Display.drawString(headerLabel, cx, 72);
 
         M5Dial.Display.drawLine(40, 93, 200, 93, TFT_DARKGREY);
 
@@ -494,9 +511,6 @@ void FreeRoamMission::updateDisplay() {
         M5Dial.Display.setTextColor(TFT_DARKGREY);
         String navV = "< " + String(browseIndex + 1) + "/" + String(count) + " >";
         M5Dial.Display.drawString(navV, cx, M5Dial.Display.height() - 50);
-
-        M5Dial.Display.setTextColor(TFT_ORANGE);
-        M5Dial.Display.drawString("[ ANY TAG AT THIS POI ]", cx, M5Dial.Display.height() - 33);
     }
 
     M5Dial.Display.setTextSize(1);

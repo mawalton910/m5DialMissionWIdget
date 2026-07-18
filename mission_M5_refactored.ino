@@ -104,6 +104,23 @@ const bool LOUD_MODE = true;
 
 static inline bool isVerboseLogging() { return SERIAL_LOG_LEVEL >= SERIAL_LOG_VERBOSE; }
 static inline bool isFullLogging() { return SERIAL_LOG_LEVEL >= SERIAL_LOG_FULL; }
+static inline bool isVaultTheme() { return ACTIVE_UI_THEME == THEME_VAULT; }
+
+static uint16_t vaultBg() { return M5Dial.Display.color565(28, 12, 0); }
+static uint16_t vaultBgAlt() { return M5Dial.Display.color565(44, 20, 0); }
+static uint16_t vaultPrimary() { return M5Dial.Display.color565(255, 150, 40); }
+static uint16_t vaultPrimaryBright() { return M5Dial.Display.color565(255, 190, 70); }
+static uint16_t vaultDanger() { return M5Dial.Display.color565(255, 90, 40); }
+
+static uint16_t themeMessageColor(uint16_t color) {
+  if (!isVaultTheme()) return color;
+  if (color == COLOR_ERROR || color == TFT_RED) return vaultDanger();
+  if (color == COLOR_WARNING || color == TFT_ORANGE) return vaultPrimary();
+  if (color == COLOR_SUCCESS || color == TFT_GREEN) return vaultPrimary();
+  if (color == COLOR_INFO || color == TFT_BLUE || color == TFT_DARKGREY) return vaultBgAlt();
+  if (color == COLOR_PROCESSING) return vaultBgAlt();
+  return color;
+}
 
 String wifiStatusToString(wl_status_t status) {
   switch (status) {
@@ -177,28 +194,38 @@ void logNetworkSnapshot(const char* stage, const String& endpoint = "") {
 }
 
 void flashScreen(uint16_t color) {
-  if (!LOUD_MODE) { M5Dial.Lcd.fillScreen(color); return; }
-  M5Dial.Lcd.fillScreen(TFT_WHITE);
+  uint16_t paint = themeMessageColor(color);
+  if (!LOUD_MODE) { M5Dial.Lcd.fillScreen(paint); return; }
+  M5Dial.Lcd.fillScreen(isVaultTheme() ? vaultPrimaryBright() : TFT_WHITE);
   delay(35);
-  M5Dial.Lcd.fillScreen(color);
+  M5Dial.Lcd.fillScreen(paint);
 }
 
 void drawAlertBorder(uint16_t color) {
   if (!LOUD_MODE) return;
+  uint16_t border = isVaultTheme() ? vaultPrimary() : color;
   int cx = M5Dial.Display.width() / 2;
   int cy = M5Dial.Display.height() / 2;
   int r  = min(cx, cy) - 1;
-  for (int i = 0; i < 4; i++) M5Dial.Display.drawCircle(cx, cy, r - i, color);
+  for (int i = 0; i < 4; i++) M5Dial.Display.drawCircle(cx, cy, r - i, border);
 }
 
 void drawStatusIcon(StatusIconType type) {
   if (!LOUD_MODE) return;
   int x = M5Dial.Display.width() - 22, y = 22;
   uint16_t bg = TFT_BLUE; String glyph = "i";
+  if (isVaultTheme()) {
+    switch (type) {
+      case ICON_SUCCESS: bg = vaultPrimary(); break;
+      case ICON_ERROR:   bg = vaultDanger(); break;
+      case ICON_WARNING: bg = vaultPrimaryBright(); break;
+      default:           bg = vaultBgAlt(); break;
+    }
+  }
   switch (type) {
-    case ICON_SUCCESS: bg = TFT_GREEN;  glyph = "OK"; break;
-    case ICON_ERROR:   bg = TFT_RED;    glyph = "X";  break;
-    case ICON_WARNING: bg = TFT_ORANGE; glyph = "!";  break;
+    case ICON_SUCCESS: if (!isVaultTheme()) bg = TFT_GREEN;  glyph = "OK"; break;
+    case ICON_ERROR:   if (!isVaultTheme()) bg = TFT_RED;    glyph = "X";  break;
+    case ICON_WARNING: if (!isVaultTheme()) bg = TFT_ORANGE; glyph = "!";  break;
     default: break;
   }
   M5Dial.Display.fillCircle(x, y, 18, bg);
@@ -346,6 +373,8 @@ public:
     logger.begin();
     Serial.printf("[BOOT] after logger.begin heap=%u\n", (unsigned)ESP.getFreeHeap());
     storyNpcToken = normalizeRfidToken(stateManager.getStoryNpcToken());
+    storyNpcName = stateManager.getStoryNpcName();
+    storyNpcName.trim();
     if (storyNpcToken.length() > 0 && storyNpcToken != stateManager.getStoryNpcToken()) {
       stateManager.setStoryNpcToken(storyNpcToken);
     }
@@ -538,15 +567,36 @@ public:
         displayScanNpcToken();
         return;
       }
+      playSuccessTone();
+      displayMultiLineMessage("LINKING NPC", "PLEASE WAIT", COLOR_INFO);
+      String resolvedNpcName;
+      bool resolved = lookupNpcNameForToken(token, resolvedNpcName);
+      if (!resolved || resolvedNpcName.length() == 0) {
+        storyNpcToken = "";
+        storyNpcName = "";
+        stateManager.clearStoryNpcToken();
+        stateManager.clearStoryNpcName();
+        logger.log("NPC token rejected: unresolved NPC name");
+        displayMultiLineMessage("NPC NOT FOUND", "SCAN NPC TAG", COLOR_WARNING);
+        delay(1600);
+        trackerState = WAIT_FOR_NPC_TOKEN;
+        waitingForBadge = false;
+        displayScanNpcToken();
+        return;
+      }
+
       storyNpcToken = token;
+      storyNpcName = resolvedNpcName;
       stateManager.setStoryNpcToken(storyNpcToken);
+      stateManager.setStoryNpcName(storyNpcName);
       stateManager.clearSavedTrackerState();
       stateManager.clearSavedMissionStart();
       Serial.printf("[NPC] %lums  Assigned story NPC token: %s\n", millis(), storyNpcToken.c_str());
-      logger.log("NPC token assigned: " + storyNpcToken);
-      playAdminAcceptTone();
-      displayMultiLineMessage("NPC TAG SAVED", storyNpcToken, COLOR_SUCCESS);
-      delay(1200);
+      Serial.printf("[NPC] %lums  Resolved NPC name: %s\n", millis(), storyNpcName.c_str());
+      logger.log("NPC token assigned: " + storyNpcToken + " -> " + storyNpcName);
+      playStateChangeTone();
+      displayMultiLineMessage("NPC LINKED", storyNpcName, COLOR_INFO);
+      delay(1400);
       trackerState = WAIT_FOR_BADGE;
       waitingForBadge = true;
       displayScanBadge();
@@ -774,10 +824,34 @@ public:
       return;
     }
 
-    // Timer overlay toggle
-    if (trackerState == RUN_MISSION && currentMission && !missionLocked) {
-      showingTimerOverlay = !showingTimerOverlay;
-      if (showingTimerOverlay) timerOverlayStartTime = millis();
+    // Mission stop confirmation (3 presses in sequence)
+    if (trackerState == RUN_MISSION && currentMission) {
+      unsigned long now = millis();
+      if (missionStopConfirmCount > 0 && now > missionStopConfirmExpiresMs) {
+        missionStopConfirmCount = 0;
+      }
+
+      missionStopConfirmCount++;
+      missionStopConfirmExpiresMs = now + MISSION_STOP_CONFIRM_WINDOW_MS;
+      playConfirmSelectTone();
+
+      if (missionStopConfirmCount < 3) {
+        displayMultiLineMessage("END MISSION?", "CONFIRM " + String(missionStopConfirmCount) + "/3", COLOR_WARNING);
+        delay(450);
+        if (trackerState == RUN_MISSION && currentMission) {
+          currentMission->updateDisplay();
+        }
+      } else {
+        Serial.printf("[ACTION] %lums  Mission stop confirmed via button\n", millis());
+        logger.log("Mission stopped by button confirmation");
+        missionStopConfirmCount = 0;
+        missionStopConfirmExpiresMs = 0;
+        displayMessage("MISSION STOPPED", COLOR_WARNING, 800);
+        currentBadgeUID = "";
+        currentMissionCardUID = "";
+        resetBadgeOnly();
+      }
+      return;
     }
     // Confirm players
     else if (trackerState == CONFIRM_PLAYERS) {
@@ -818,6 +892,13 @@ public:
     // Screen timeout
     if (screenOn && (millis() - lastActivityMs > SCREEN_TIMEOUT_MS)) {
       screenOn = false; M5Dial.Display.setBrightness(0);
+    }
+
+    if (trackerState != RUN_MISSION && missionStopConfirmCount != 0) {
+      missionStopConfirmCount = 0;
+      missionStopConfirmExpiresMs = 0;
+    } else if (missionStopConfirmCount > 0 && millis() > missionStopConfirmExpiresMs) {
+      missionStopConfirmCount = 0;
     }
 
     // Confirm-players encoder
@@ -1031,15 +1112,16 @@ public:
     else if (color == COLOR_ERROR || color == TFT_RED) playErrorTone();
     else if (color == COLOR_INFO || color == TFT_BLUE) playInfoTone();
 
-    flashScreen(color);
+    uint16_t themedColor = themeMessageColor(color);
+    flashScreen(themedColor);
     M5Dial.Display.setTextDatum(MC_DATUM);
     M5Dial.Display.setTextSize(2);
     M5Dial.Display.setTextColor(TFT_WHITE);
 
-    if (color == COLOR_SUCCESS || color == TFT_GREEN)      { drawStatusIcon(ICON_SUCCESS); drawAlertBorder(TFT_WHITE); }
-    else if (color == COLOR_ERROR || color == TFT_RED)     { drawStatusIcon(ICON_ERROR);   drawAlertBorder(TFT_WHITE); }
-    else if (color == COLOR_WARNING || color == TFT_ORANGE){ drawStatusIcon(ICON_WARNING); drawAlertBorder(TFT_WHITE); }
-    else                                                   { drawStatusIcon(ICON_INFO);    drawAlertBorder(TFT_DARKGREY); }
+    if (color == COLOR_SUCCESS || color == TFT_GREEN)      { drawStatusIcon(ICON_SUCCESS); drawAlertBorder(isVaultTheme() ? vaultPrimary() : TFT_WHITE); }
+    else if (color == COLOR_ERROR || color == TFT_RED)     { drawStatusIcon(ICON_ERROR);   drawAlertBorder(isVaultTheme() ? vaultDanger() : TFT_WHITE); }
+    else if (color == COLOR_WARNING || color == TFT_ORANGE){ drawStatusIcon(ICON_WARNING); drawAlertBorder(isVaultTheme() ? vaultPrimary() : TFT_WHITE); }
+    else                                                   { drawStatusIcon(ICON_INFO);    drawAlertBorder(isVaultTheme() ? vaultPrimary() : TFT_DARKGREY); }
 
     const int MAX_CHARS = 15, LINE_H = 20;
     std::vector<String> lines;
@@ -1074,7 +1156,7 @@ public:
   }
 
   void displayMultiLineMessage(String l1, String l2, uint16_t color) {
-    M5Dial.Lcd.fillScreen(color);
+    M5Dial.Lcd.fillScreen(themeMessageColor(color));
     M5Dial.Display.setTextDatum(MC_DATUM);
     M5Dial.Display.setTextSize(2);
     M5Dial.Display.setTextColor(TFT_WHITE);
@@ -1083,18 +1165,18 @@ public:
   }
 
   void displayScanNpcToken() {
-    flashScreen(TFT_BLACK);
+    flashScreen(isVaultTheme() ? vaultBg() : TFT_BLACK);
     drawStatusIcon(ICON_INFO);
-    drawAlertBorder(TFT_CYAN);
+    drawAlertBorder(isVaultTheme() ? vaultPrimary() : TFT_CYAN);
     drawBadgeIcon(120, 50, 70);
     M5Dial.Display.setTextDatum(MC_DATUM);
     M5Dial.Display.setTextSize(2);
-    M5Dial.Display.setTextColor(TFT_CYAN);
+    M5Dial.Display.setTextColor(isVaultTheme() ? vaultPrimaryBright() : TFT_CYAN);
     M5Dial.Display.drawString("ASSIGN DIAL", 120, 135);
     M5Dial.Display.setTextColor(TFT_WHITE);
     M5Dial.Display.drawString("SCAN NPC TAG", 120, 165);
     M5Dial.Display.setTextSize(1);
-    M5Dial.Display.setTextColor(TFT_LIGHTGREY);
+    M5Dial.Display.setTextColor(isVaultTheme() ? vaultPrimary() : TFT_LIGHTGREY);
     M5Dial.Display.drawString("Saved until cleared in Admin", 120, 195);
   }
 
@@ -1337,16 +1419,18 @@ public:
   }
 
   void drawMissionPassedScreen() {
-    flashScreen(TFT_GREEN); drawStatusIcon(ICON_SUCCESS); drawAlertBorder(TFT_WHITE);
+    uint16_t accent = isVaultTheme() ? vaultPrimary() : TFT_GREEN;
+    uint16_t outline = isVaultTheme() ? vaultPrimaryBright() : TFT_BLACK;
+    flashScreen(accent); drawStatusIcon(ICON_SUCCESS); drawAlertBorder(isVaultTheme() ? vaultPrimary() : TFT_WHITE);
     int cx = M5Dial.Display.width()/2, ty = M5Dial.Display.height()/2 - 30, by = M5Dial.Display.height()/2 + 20;
     M5Dial.Display.setTextDatum(MC_DATUM);
     // Gold outlined "MISSION PASSED"
-    M5Dial.Display.setTextSize(2); M5Dial.Display.setTextColor(TFT_BLACK);
+    M5Dial.Display.setTextSize(2); M5Dial.Display.setTextColor(outline);
     for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) if (dx||dy) M5Dial.Display.drawString(DisplayText::MISSION_PASSED, cx+dx, ty+dy);
-    M5Dial.Display.setTextColor(M5Dial.Display.color565(218,165,32));
+    M5Dial.Display.setTextColor(TFT_WHITE);
     M5Dial.Display.drawString(DisplayText::MISSION_PASSED, cx, ty);
     // White outlined "+RESPECT"
-    M5Dial.Display.setTextSize(3); M5Dial.Display.setTextColor(TFT_BLACK);
+    M5Dial.Display.setTextSize(3); M5Dial.Display.setTextColor(outline);
     for (int dx = -3; dx <= 3; dx++) for (int dy = -3; dy <= 3; dy++) if (dx||dy) M5Dial.Display.drawString(DisplayText::RESPECT_PLUS, cx+dx, by+dy);
     M5Dial.Display.setTextColor(TFT_WHITE);
     M5Dial.Display.drawString(DisplayText::RESPECT_PLUS, cx, by);
@@ -1355,14 +1439,16 @@ public:
   void drawMissionStartingScreen() {
     flashScreen(TFT_BLACK); drawStatusIcon(ICON_INFO); drawAlertBorder(TFT_WHITE);
     int cx = M5Dial.Display.width()/2, ty = M5Dial.Display.height()/2 - 24, by = M5Dial.Display.height()/2 + 18;
+    uint16_t falloutGreen = M5Dial.Display.color565(60, 210, 120);
+    uint16_t outlineColor = isVaultTheme() ? vaultPrimary() : falloutGreen;
     M5Dial.Display.setTextDatum(MC_DATUM);
 
-    M5Dial.Display.setTextSize(2); M5Dial.Display.setTextColor(TFT_BLACK);
+    M5Dial.Display.setTextSize(2); M5Dial.Display.setTextColor(outlineColor);
     for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) if (dx||dy) M5Dial.Display.drawString("MISSION", cx+dx, ty+dy);
-    M5Dial.Display.setTextColor(M5Dial.Display.color565(218,165,32));
+    M5Dial.Display.setTextColor(TFT_WHITE);
     M5Dial.Display.drawString("MISSION", cx, ty);
 
-    M5Dial.Display.setTextSize(2); M5Dial.Display.setTextColor(TFT_BLACK);
+    M5Dial.Display.setTextSize(2); M5Dial.Display.setTextColor(outlineColor);
     for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) if (dx||dy) M5Dial.Display.drawString("STARTING", cx+dx, by+dy);
     M5Dial.Display.setTextColor(TFT_WHITE);
     M5Dial.Display.drawString("STARTING", cx, by);
@@ -1630,7 +1716,9 @@ public:
     stateManager.setPlayerUUID(""); stateManager.setSelectedLocations(""); stateManager.setVisitedCount(0);
     missionStartTime = 0; lastTimerUpdate = 0; missionLocked = false;
     awaitingCompletionScan = false; lockedDifficulty = ""; completionPromptShown = false;
+    missionStopConfirmCount = 0; missionStopConfirmExpiresMs = 0;
     stateManager.clearMissionStartTime(); stateManager.clearLockedDifficulty();
+    stateManager.clearActiveMissionName();
     displayScanBadge();
   }
 
@@ -1643,9 +1731,11 @@ public:
     currentBadgeUID = "";
     for (int i = 0; i < MAX_PLAYERS; i++) playerUUIDs[i] = "";
     playerCount = 0; stateManager.setPlayerUUID("");
+    missionStopConfirmCount = 0; missionStopConfirmExpiresMs = 0;
     awaitingBadgeRestore = true; trackerState = WAIT_FOR_BADGE; waitingForBadge = true;
     playSound(SND_RESET, SND_RESET_LEN, 255, "RESET", EXT_RESET);
     displayMessage(DisplayText::BADGE_RESET, COLOR_INFO, 1500);
+    stateManager.clearActiveMissionName();
     displayScanBadge();
   }
 
@@ -1661,6 +1751,7 @@ public:
     lastCompletedBadgeUIDs.clear(); badgeCooldownMap.clear();
     lastCompletedMissionCardUID = ""; missionLocked = false;
     awaitingCompletionScan = false; completionPromptShown = false; lockedDifficulty = "";
+    missionStopConfirmCount = 0; missionStopConfirmExpiresMs = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) playerUUIDs[i] = "";
     playerCount = 0;
     relayBadgeUID = ""; relayLastResponse = ""; relayLastSuccess = false;
@@ -1671,6 +1762,7 @@ public:
     displayMessage(DisplayText::MEMORY_CLEARED, COLOR_WARNING, 2000);
     displaySplashScreen();
     storyNpcToken = "";
+    storyNpcName = "";
     if (currentMode == MODE_RELAY) {
       trackerState = RELAY_WAIT_BADGE;
       displayRelayBadgePrompt();
@@ -1687,20 +1779,25 @@ public:
     for (int i = 0; i < MAX_PLAYERS; i++) playerUUIDs[i] = "";
     playerCount = 0; waitingForBadge = false;
     currentBadgeUID = ""; currentMissionCardUID = "";
+    missionStopConfirmCount = 0; missionStopConfirmExpiresMs = 0;
     lastCompletedBadgeUIDs.clear(); lastCompletedMissionCardUID = "";
     badgeCooldownMap.clear();
     String assignedNpcToken = stateManager.getStoryNpcToken();
+    String assignedNpcName = stateManager.getStoryNpcName();
     stateManager.clearAll(); stateManager.clearCompletedBadges();
     if (assignedNpcToken.length() > 0) stateManager.setStoryNpcToken(assignedNpcToken);
+    if (assignedNpcName.length() > 0) stateManager.setStoryNpcName(assignedNpcName);
     stateManager.setSelectedLocations(""); stateManager.setVisitedCount(0);
     displayMessage(DisplayText::RESETTING, COLOR_INFO, 500);
     displaySplashScreen();
     if (assignedNpcToken.length() > 0) {
       storyNpcToken = normalizeRfidToken(assignedNpcToken);
+      storyNpcName = sanitizeNpcDisplayName(assignedNpcName);
       trackerState = WAIT_FOR_BADGE;
       displayScanBadge();
     } else {
       storyNpcToken = "";
+      storyNpcName = "";
       trackerState = WAIT_FOR_NPC_TOKEN;
       displayScanNpcToken();
     }
@@ -1771,10 +1868,14 @@ private:
   bool completionPromptShown = false;
   bool showingTimerOverlay = false;
   unsigned long timerOverlayStartTime = 0;
+  int missionStopConfirmCount = 0;
+  unsigned long missionStopConfirmExpiresMs = 0;
+  static const unsigned long MISSION_STOP_CONFIRM_WINDOW_MS = 8000UL;
 
   String relayBadgeUID;
   String relayLastResponse;
   String storyNpcToken;
+  String storyNpcName;
   bool relayLastSuccess = false;
   unsigned long lastActivityMs = 0;
   unsigned long lastWiFiReconnectAttemptMs = 0;
@@ -1797,6 +1898,69 @@ private:
     token.replace(":", "");
     token.toUpperCase();
     return token;
+  }
+
+  static String sanitizeNpcDisplayName(String name) {
+    name.replace("|", " ");
+    name.replace("~", " ");
+    name.trim();
+    if (name.length() > 28) name = name.substring(0, 28);
+    return name;
+  }
+
+  bool lookupNpcNameForToken(const String& token, String& npcNameOut) {
+    npcNameOut = "";
+    if (token.length() == 0) return false;
+
+    if (!connectToWiFi()) {
+      logger.log("NPC lookup: WiFi unavailable");
+      shutdownWiFi();
+      return false;
+    }
+
+    DynamicJsonDocument request(1024);
+    request["mac_address"] = DEVICE_MAC_ADDR;
+    request["serial_number"] = DEVICE_SERIAL_NUM;
+    request["game_id"] = DEVICE_GAME_ID;
+    request["mission_uuid"] = token;
+    request["source_uuid"] = token;
+    request["npc_id"] = STORY_NPC_ID;
+    request.createNestedArray("player_uuids");
+    String payload;
+    serializeJson(request, payload);
+
+    HTTPClient http;
+    const int lookupTimeoutMs = min(HTTP_TIMEOUT, 5000);
+    http.setTimeout(lookupTimeoutMs);
+    http.setConnectTimeout(lookupTimeoutMs);
+    http.begin(STORY_ROUND_ENDPOINT);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(payload);
+    String response = code > 0 ? http.getString() : "";
+    http.end();
+
+    Serial.printf("[NPC LOOKUP] HTTP %d for token %s\n", code, token.c_str());
+    if (code < 0) {
+      Serial.printf("[NPC LOOKUP] HTTP error detail: %s\n", HTTPClient::errorToString(code).c_str());
+      shutdownWiFi();
+      return false;
+    }
+
+    DynamicJsonDocument doc(12288);
+    if (deserializeJson(doc, response)) {
+      shutdownWiFi();
+      return false;
+    }
+
+    String found = doc["source"]["npc_name"].as<String>();
+    if (found.length() == 0) found = doc["details"]["npc_name"].as<String>();
+    if (found.length() == 0) found = doc["matched_npc"]["name"].as<String>();
+    found = sanitizeNpcDisplayName(found);
+    shutdownWiFi();
+
+    if (found.length() == 0) return false;
+    npcNameOut = found;
+    return true;
   }
 
   void persistPlayerList() {
@@ -1924,6 +2088,7 @@ private:
     // Mission Widget keeps the Free Roam presentation, but the assigned NPC
     // token selects the server-generated shared mission for the active round.
     const bool automaticFreeRoam = currentMode == MODE_MISSION_WIDGET;
+    stateManager.clearActiveMissionName();
     if (playerCount == 0) {
       displayError("NO PLAYERS");
       delay(1500);
@@ -2126,6 +2291,10 @@ private:
     currentMissionCardUID = missionUuid.length() > 0 ? missionUuid : resolvedMissionId;
     logger.log(String(automaticFreeRoam ? "Free roam loaded story round " : "Story round ") + roundKey);
     String returnedMissionName = manifest["mission"]["name"].as<String>();
+    returnedMissionName.trim();
+    int roundSuffix = returnedMissionName.indexOf(" - Round ");
+    if (roundSuffix > 0) returnedMissionName = returnedMissionName.substring(0, roundSuffix);
+    stateManager.setActiveMissionName(returnedMissionName);
     String returnedNpcName = manifest["source"]["npc_name"].as<String>();
     Serial.printf("[%s] Mission: %s | NPC: %s | Round: %s\n",
                   automaticFreeRoam ? "FREE ROAM" : "STORY",
@@ -2133,7 +2302,7 @@ private:
                   roundKey.c_str());
 
     shutdownWiFi();
-    playSound(SND_MISSION_START, SND_MISSION_START_LEN, 255, "MISSION_START", EXT_MISSION_START);
+    playSound(SND_BADGE_SCAN, SND_BADGE_SCAN_LEN, 255, "BADGE_SCAN", EXT_BADGE_SCAN);
     startMission(new FreeRoamMission(stateManager), nullptr);
   }
 
@@ -2196,7 +2365,9 @@ private:
         displayMessage("Scan Any Tag", COLOR_INFO, 0); break;
       case 7:
         stateManager.clearStoryNpcToken();
+        stateManager.clearStoryNpcName();
         storyNpcToken = "";
+        storyNpcName = "";
         logger.log("Admin: NPC token cleared");
         displayMessage("NPC TAG\nCLEARED", COLOR_WARNING, 1500);
         trackerState = WAIT_FOR_NPC_TOKEN;
@@ -2221,9 +2392,11 @@ private:
     const int segmentW = (barW - (segments - 1) * gap) / segments;
 
     for (int frame = 0; frame < 10; frame++) {
-      canvas.fillSprite((frame % 2) ? TFT_BLACK : TFT_MAROON);
+      uint16_t bgA = isVaultTheme() ? vaultBg() : TFT_BLACK;
+      uint16_t bgB = isVaultTheme() ? vaultBgAlt() : TFT_MAROON;
+      canvas.fillSprite((frame % 2) ? bgA : bgB);
       canvas.setTextDatum(MC_DATUM);
-      canvas.setTextColor(TFT_RED);
+      canvas.setTextColor(isVaultTheme() ? vaultDanger() : TFT_RED);
       canvas.setTextSize(2);
       canvas.drawString("HEALTH DEPLETED", cx, 25);
 
@@ -2231,17 +2404,17 @@ private:
       canvas.setTextSize(5);
       canvas.drawString("0:00", cx, 67);
 
-      canvas.setTextColor((frame % 2) ? TFT_ORANGE : TFT_YELLOW);
+      canvas.setTextColor(isVaultTheme() ? ((frame % 2) ? vaultPrimary() : vaultPrimaryBright()) : ((frame % 2) ? TFT_ORANGE : TFT_YELLOW));
       canvas.setTextSize(2);
       canvas.drawString("TIME EXPIRED", cx, 94);
 
       for (int i = 0; i < segments; i++) {
         int x = barX + i * (segmentW + gap);
-        canvas.drawRoundRect(x, barY, segmentW, 10, 2, TFT_RED);
+        canvas.drawRoundRect(x, barY, segmentW, 10, 2, isVaultTheme() ? vaultDanger() : TFT_RED);
       }
       canvas.drawRoundRect(5 + (frame % 2), 5 + (frame % 2),
                           230 - (frame % 2) * 2, 130 - (frame % 2) * 2,
-                          8, (frame % 2) ? TFT_ORANGE : TFT_RED);
+                          8, isVaultTheme() ? ((frame % 2) ? vaultPrimary() : vaultDanger()) : ((frame % 2) ? TFT_ORANGE : TFT_RED));
       canvas.pushSprite(0, 0);
       delay(90);
     }
@@ -2259,15 +2432,19 @@ private:
     bool urgent = rem <= 10000UL;
     bool pulse = urgent && ((now / 250UL) % 2UL == 0UL);
     float ratio = (MISSION_TIMEOUT_MS > 0UL) ? ((float)rem / (float)MISSION_TIMEOUT_MS) : 0.0f;
-    canvas.fillSprite(pulse ? TFT_MAROON : TFT_BLACK);
+    canvas.fillSprite(isVaultTheme() ? (pulse ? vaultBgAlt() : vaultBg()) : (pulse ? TFT_MAROON : TFT_BLACK));
     canvas.setTextDatum(MC_DATUM);
-    uint16_t healthColor = (ratio > 0.50f) ? TFT_GREEN : ((ratio > 0.25f) ? TFT_ORANGE : TFT_RED);
+    uint16_t healthColor = isVaultTheme()
+      ? ((ratio > 0.50f) ? vaultPrimaryBright() : ((ratio > 0.25f) ? vaultPrimary() : vaultDanger()))
+      : ((ratio > 0.50f) ? TFT_GREEN : ((ratio > 0.25f) ? TFT_ORANGE : TFT_RED));
     canvas.setTextSize(2); canvas.setTextColor(healthColor);
     canvas.drawString(DisplayText::TIMER_TITLE, 120, 25);
     canvas.setTextSize(5); canvas.setTextColor(critical ? healthColor : TFT_WHITE);
     canvas.drawString(String(ts), 120, 67);
     if (critical) {
-      canvas.setTextColor(urgent ? (pulse ? TFT_WHITE : TFT_YELLOW) : TFT_ORANGE);
+      canvas.setTextColor(isVaultTheme()
+        ? (urgent ? (pulse ? TFT_WHITE : vaultPrimaryBright()) : vaultPrimary())
+        : (urgent ? (pulse ? TFT_WHITE : TFT_YELLOW) : TFT_ORANGE));
       canvas.setTextSize(2);
       canvas.drawString(urgent ? "FINAL WARNING" : DisplayText::TIMER_HURRY, 120, 91);
     }
@@ -2277,11 +2454,11 @@ private:
     if (filledSegments > 10) filledSegments = 10;
     for (int i = 0; i < 10; i++) {
       int sx = bx + i * 20;
-      uint16_t segmentColor = (i < filledSegments) ? healthColor : TFT_DARKGREY;
+      uint16_t segmentColor = (i < filledSegments) ? healthColor : (isVaultTheme() ? M5Dial.Display.color565(90, 55, 20) : TFT_DARKGREY);
       canvas.fillRoundRect(sx, by2, 17, 10, 2, segmentColor);
-      canvas.drawRoundRect(sx, by2, 17, 10, 2, TFT_WHITE);
+      canvas.drawRoundRect(sx, by2, 17, 10, 2, isVaultTheme() ? vaultPrimaryBright() : TFT_WHITE);
     }
-    if (urgent) canvas.drawRoundRect(14, 108, 212, 26, 5, pulse ? TFT_WHITE : TFT_RED);
+    if (urgent) canvas.drawRoundRect(14, 108, 212, 26, 5, isVaultTheme() ? (pulse ? TFT_WHITE : vaultPrimary()) : (pulse ? TFT_WHITE : TFT_RED));
     canvas.pushSprite(0, 0);
   }
 };
@@ -2392,6 +2569,12 @@ void loop() {
     Serial.printf("[STATE] %lums  State changed: %s -> %s\n", millis(), stateName(lastState), stateName(tracker.trackerState));
     if (LOUD_MODE) {
       if (lastState == WAIT_FOR_BADGE && tracker.trackerState == CONFIRM_PLAYERS) playConfirmPlayersTone();
+      else if (lastState == WAIT_FOR_NPC_TOKEN && tracker.trackerState == WAIT_FOR_BADGE) {
+        // NPC-link acceptance already plays STATE_CHANGE explicitly.
+      }
+      else if (lastState == CONFIRM_PLAYERS && tracker.trackerState == RUN_MISSION) {
+        // Mission start already plays its own launch cue.
+      }
       else playStateChangeTone();
     }
     lastState = tracker.trackerState;
