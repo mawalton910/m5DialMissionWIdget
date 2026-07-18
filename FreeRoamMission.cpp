@@ -14,16 +14,50 @@ FreeRoamMission::FreeRoamMission(StateManager& sm)
     : stateManager(sm) {}
 
 // ---- getSelectedLocationsString ----
-// Format: v2|S=loc0,loc1,loc2,loc3|V=0,1,0,1
+// Format: v4|C=count|S=loc0,loc1|N=name0~name1|V=0,1.
+// v2/v3 states without N are also accepted and fall back to LOCATION_NAMES.
+
+static String sanitizeMissionDisplayName(String name) {
+    name.replace("|", " ");
+    name.replace("~", " ");
+    name.trim();
+    return name;
+}
+
+String FreeRoamMission::displayNameForSpot(int spotIndex) const {
+    if (spotIndex >= 0 && spotIndex < REQUIRED_LOCATIONS && missionDisplayNames[spotIndex][0] != '\0') {
+        return String(missionDisplayNames[spotIndex]);
+    }
+    int loc = (spotIndex >= 0 && spotIndex < REQUIRED_LOCATIONS) ? missionLocations[spotIndex] : 0;
+    if (loc < 0 || loc >= TOTAL_LOCATIONS) loc = 0;
+    return String(LOCATION_NAMES[loc]);
+}
+
+void FreeRoamMission::setDisplayNameForSpot(int spotIndex, const String& name) {
+    if (spotIndex < 0 || spotIndex >= REQUIRED_LOCATIONS) return;
+    String clean = sanitizeMissionDisplayName(name);
+    if (clean.length() == 0) {
+        int loc = missionLocations[spotIndex];
+        if (loc < 0 || loc >= TOTAL_LOCATIONS) loc = 0;
+        clean = String(LOCATION_NAMES[loc]);
+    }
+    clean.toCharArray(missionDisplayNames[spotIndex], MISSION_DISPLAY_NAME_MAX);
+}
 
 String FreeRoamMission::getSelectedLocationsString() const {
-    String s = "v2|S=";
-    for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
+    const int count = constrain(activeSpotCount, 1, REQUIRED_LOCATIONS);
+    String s = "v4|C=" + String(count) + "|S=";
+    for (int i = 0; i < count; i++) {
         if (i > 0) s += ",";
         s += String(missionLocations[i]);
     }
+    s += "|N=";
+    for (int i = 0; i < count; i++) {
+        if (i > 0) s += "~";
+        s += sanitizeMissionDisplayName(displayNameForSpot(i));
+    }
     s += "|V=";
-    for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
+    for (int i = 0; i < count; i++) {
         if (i > 0) s += ",";
         s += missionSpotVisited[i] ? "1" : "0";
     }
@@ -31,18 +65,36 @@ String FreeRoamMission::getSelectedLocationsString() const {
 }
 
 bool FreeRoamMission::parseSavedMissionState(const String& saved) {
-    if (!saved.startsWith("v2|S=")) return false;
+    bool hasNames = saved.startsWith("v4|C=");
+    bool hasCount = hasNames || saved.startsWith("v3|C=");
+    bool legacy = saved.startsWith("v2|S=");
+    if (!hasCount && !legacy) return false;
 
-    int split = saved.indexOf("|V=");
+    int count = REQUIRED_LOCATIONS;
+    int selStart = 5;
+    if (hasCount) {
+        int countEnd = saved.indexOf("|S=");
+        if (countEnd < 0) return false;
+        count = saved.substring(5, countEnd).toInt();
+        if (count < 1 || count > REQUIRED_LOCATIONS) return false;
+        selStart = countEnd + 3;
+    }
+
+    int namesSplit = hasNames ? saved.indexOf("|N=", selStart) : -1;
+    int split = saved.indexOf("|V=", hasNames ? namesSplit + 3 : selStart);
     if (split < 0) return false;
+    if (hasNames && namesSplit < 0) return false;
 
-    String sel = saved.substring(5, split);
+    String sel = hasNames ? saved.substring(selStart, namesSplit) : saved.substring(selStart, split);
+    String names = hasNames ? saved.substring(namesSplit + 3, split) : "";
     String vis = saved.substring(split + 3);
 
     int parsedLocs[REQUIRED_LOCATIONS];
     bool parsedVisited[REQUIRED_LOCATIONS];
+    String parsedNames[REQUIRED_LOCATIONS];
     int locCount = 0;
     int visCount = 0;
+    int nameCount = 0;
 
     int idx = 0;
     while (idx <= (int)sel.length() && locCount < REQUIRED_LOCATIONS) {
@@ -56,6 +108,18 @@ bool FreeRoamMission::parseSavedMissionState(const String& saved) {
         }
         if (comma == -1) break;
         idx = comma + 1;
+    }
+
+    if (hasNames) {
+        idx = 0;
+        while (idx <= (int)names.length() && nameCount < REQUIRED_LOCATIONS) {
+            int sep = names.indexOf('~', idx);
+            String tok = (sep == -1) ? names.substring(idx) : names.substring(idx, sep);
+            tok = sanitizeMissionDisplayName(tok);
+            parsedNames[nameCount++] = tok;
+            if (sep == -1) break;
+            idx = sep + 1;
+        }
     }
 
     idx = 0;
@@ -72,16 +136,26 @@ bool FreeRoamMission::parseSavedMissionState(const String& saved) {
         idx = comma + 1;
     }
 
-    if (locCount != REQUIRED_LOCATIONS || visCount != REQUIRED_LOCATIONS) return false;
+    if (legacy) count = locCount;
+    if (count < 1 || count > REQUIRED_LOCATIONS || locCount != count || visCount != count) return false;
 
+    activeSpotCount = count;
     for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
-        missionLocations[i] = parsedLocs[i];
-        missionSpotVisited[i] = parsedVisited[i];
+        missionLocations[i] = i < count ? parsedLocs[i] : 0;
+        missionSpotVisited[i] = i < count ? parsedVisited[i] : false;
+        missionDisplayNames[i][0] = '\0';
+        if (i < count) {
+            if (hasNames && i < nameCount && parsedNames[i].length() > 0) {
+                setDisplayNameForSpot(i, parsedNames[i]);
+            } else {
+                setDisplayNameForSpot(i, String(LOCATION_NAMES[missionLocations[i]]));
+            }
+        }
     }
     return true;
 }
-
 void FreeRoamMission::buildMissionSelection() {
+    activeSpotCount = REQUIRED_LOCATIONS;
     for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
         missionSpotVisited[i] = false;
     }
@@ -90,6 +164,7 @@ void FreeRoamMission::buildMissionSelection() {
         // Dev mode forces all 4 spots to GURU_HOME.
         for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
             missionLocations[i] = TOTAL_LOCATIONS - 1;
+            setDisplayNameForSpot(i, String(LOCATION_NAMES[missionLocations[i]]));
         }
         return;
     }
@@ -108,6 +183,7 @@ void FreeRoamMission::buildMissionSelection() {
 
     for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
         missionLocations[i] = pool[i % prodCount];
+        setDisplayNameForSpot(i, String(LOCATION_NAMES[missionLocations[i]]));
     }
 }
 
@@ -120,6 +196,7 @@ void FreeRoamMission::setup() {
 
     for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
         missionLocations[i] = 0;
+        missionDisplayNames[i][0] = '\0';
         missionSpotVisited[i] = false;
     }
 
@@ -129,7 +206,7 @@ void FreeRoamMission::setup() {
         buildMissionSelection();
     }
 
-    for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
+    for (int i = 0; i < activeSpotCount; i++) {
         if (missionSpotVisited[i]) {
             int loc = missionLocations[i];
             if (loc >= 0 && loc < TOTAL_LOCATIONS) {
@@ -143,7 +220,7 @@ void FreeRoamMission::setup() {
     if (restored) {
         Serial.println("[ROAM] Restored mission state with " + String(visitedCount) + " completed spots");
     } else {
-        Serial.println("[ROAM] Created new 4-spot mission");
+        Serial.println("[ROAM] Created new " + String(activeSpotCount) + "-spot mission");
     }
 
     stateManager.setSelectedLocations(getSelectedLocationsString());
@@ -193,20 +270,20 @@ void FreeRoamMission::processLocation(String locationTag) {
             return;
         }
 
-        for (int i = 0; i < REQUIRED_LOCATIONS; i++) {
+        for (int i = 0; i < activeSpotCount; i++) {
             if (missionLocations[i] == locIdx) {
                 spotIdx = i;
                 break;
             }
         }
         if (spotIdx < 0) {
-            Serial.println("[ROAM] Tag is valid POI but not one of this mission's 4 spots");
+            Serial.println("[ROAM] Tag is valid POI but not one of this mission's active spots");
             return;
         }
     }
 
     if (missionSpotVisited[spotIdx]) {
-        Serial.println("[ROAM] POI already visited: " + String(LOCATION_NAMES[locIdx]));
+        Serial.println("[ROAM] POI already visited: " + displayNameForSpot(spotIdx));
         playErrorTone();
         M5Dial.Lcd.fillScreen(TFT_RED);
         M5Dial.Display.setTextDatum(MC_DATUM);
@@ -229,7 +306,7 @@ void FreeRoamMission::processLocation(String locationTag) {
     stateManager.setSelectedLocations(getSelectedLocationsString());
     stateManager.setVisitedCount(visitedCount);
 
-    Serial.println("[ROAM] Visited " + String(LOCATION_NAMES[locIdx]) +
+    Serial.println("[ROAM] Visited " + displayNameForSpot(spotIdx) +
                    " (" + String(visitedCount) + " total)");
     playSuccessTone();
     updateDisplay();
@@ -250,7 +327,7 @@ String FreeRoamMission::getCurrentDifficulty() {
 // ---- drawProgressPips ----
 
 void FreeRoamMission::drawProgressPips(int cx, int cy, int done, int activeIndex) {
-    const int total = REQUIRED_LOCATIONS;
+    const int total = constrain(activeSpotCount, 1, REQUIRED_LOCATIONS);
     const int PIP_R   = 6;
     const int SPACING = 18;
     int startX = cx - ((total - 1) * SPACING) / 2;
@@ -297,7 +374,8 @@ void FreeRoamMission::updateDisplay() {
     bool encoderMoved = false;
     if (abs(delta) >= 4) {
         int dir = (delta > 0) ? 1 : -1;
-        browseIndex = (browseIndex + dir + REQUIRED_LOCATIONS) % REQUIRED_LOCATIONS;
+        const int count = constrain(activeSpotCount, 1, REQUIRED_LOCATIONS);
+        browseIndex = (browseIndex + dir + count) % count;
         lastEncoder = enc;
         encoderMoved = true;
     }
@@ -319,10 +397,10 @@ void FreeRoamMission::updateDisplay() {
     lastDrawnVisited = visitedCount;
     if (timerDirty) lastTimerSec = currentSec;
 
-    browseIndex = constrain(browseIndex, 0, REQUIRED_LOCATIONS - 1);
-    int currentLocIdx = missionLocations[browseIndex];
+    const int count = constrain(activeSpotCount, 1, REQUIRED_LOCATIONS);
+    browseIndex = constrain(browseIndex, 0, count - 1);
     bool isVisited = missionSpotVisited[browseIndex];
-    String poiName  = String(LOCATION_NAMES[currentLocIdx]);
+    String poiName  = displayNameForSpot(browseIndex);
 
     M5Dial.Lcd.fillScreen(TFT_BLACK);
     M5Dial.Display.setTextDatum(MC_DATUM);
@@ -344,7 +422,7 @@ void FreeRoamMission::updateDisplay() {
     // ---- Header (below timer) ----
     M5Dial.Display.setTextSize(1);
     M5Dial.Display.setTextColor(TFT_CYAN);
-    M5Dial.Display.drawString("MISSION PROGRESS  " + String(visitedCount) + "/" + String(REQUIRED_LOCATIONS), cx, 38);
+    M5Dial.Display.drawString("MISSION PROGRESS  " + String(visitedCount) + "/" + String(count), cx, 38);
 
     // ---- Progress pips ----
     drawProgressPips(cx, M5Dial.Display.height() - 16, visitedCount, browseIndex);
@@ -380,7 +458,7 @@ void FreeRoamMission::updateDisplay() {
 
         M5Dial.Display.setTextSize(1);
         M5Dial.Display.setTextColor(TFT_DARKGREY);
-        String navV = "< " + String(browseIndex + 1) + "/" + String(REQUIRED_LOCATIONS) + " >";
+        String navV = "< " + String(browseIndex + 1) + "/" + String(count) + " >";
         M5Dial.Display.drawString(navV, cx, M5Dial.Display.height() - 50);
 
         M5Dial.Display.setTextColor(TFT_GREEN);
@@ -414,7 +492,7 @@ void FreeRoamMission::updateDisplay() {
 
         M5Dial.Display.setTextSize(1);
         M5Dial.Display.setTextColor(TFT_DARKGREY);
-        String navV = "< " + String(browseIndex + 1) + "/" + String(REQUIRED_LOCATIONS) + " >";
+        String navV = "< " + String(browseIndex + 1) + "/" + String(count) + " >";
         M5Dial.Display.drawString(navV, cx, M5Dial.Display.height() - 50);
 
         M5Dial.Display.setTextColor(TFT_ORANGE);
