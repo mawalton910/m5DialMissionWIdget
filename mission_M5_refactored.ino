@@ -896,7 +896,7 @@ public:
               completionPromptShown = false;
               playSound(SND_TIMEOUT, SND_TIMEOUT_LEN, 255, "TIMEOUT", EXT_TIMEOUT);
               drawTimerExpiredAnimation();
-              displayMultiLineMessage(DisplayText::TIMEOUT_TITLE, DisplayText::TIMEOUT_ACTION, COLOR_WARNING);
+              displayMultiLineMessage(DisplayText::RETURN_TO_BASE, DisplayText::NO_REWARD, COLOR_WARNING);
             } else {
               missionLocked = true; awaitingCompletionScan = true;
               lockedDifficulty = diff;
@@ -904,8 +904,7 @@ public:
               completionPromptShown = false;
               playSound(SND_TIMEOUT, SND_TIMEOUT_LEN, 255, "TIMEOUT", EXT_TIMEOUT);
               drawTimerExpiredAnimation();
-              displayMultiLineMessage(DisplayText::COMPLETION_TITLE, DisplayText::COMPLETION_SUBTITLE, COLOR_INFO);
-              displayMultiLineMessage(DisplayText::REWARD_LABEL, lockedDifficulty, COLOR_INFO);
+              displayMultiLineMessage(DisplayText::RETURN_TO_BASE, String(DisplayText::CLAIM_REWARD) + " " + lockedDifficulty, COLOR_INFO);
             }
           }
         }
@@ -925,10 +924,9 @@ public:
       // Locked prompt
       if (trackerState == RUN_MISSION && missionLocked && !completionPromptShown) {
         if (lockedDifficulty.isEmpty() || lockedDifficulty == "None") {
-          displayMultiLineMessage(DisplayText::TIMEOUT_TITLE, DisplayText::TIMEOUT_ACTION, COLOR_WARNING);
+          displayMultiLineMessage(DisplayText::RETURN_TO_BASE, DisplayText::NO_REWARD, COLOR_WARNING);
         } else {
-          displayMultiLineMessage(DisplayText::COMPLETION_TITLE, DisplayText::COMPLETION_SUBTITLE, COLOR_INFO);
-          displayMultiLineMessage(DisplayText::REWARD_LABEL, lockedDifficulty, COLOR_INFO);
+          displayMultiLineMessage(DisplayText::RETURN_TO_BASE, String(DisplayText::CLAIM_REWARD) + " " + lockedDifficulty, COLOR_INFO);
         }
         completionPromptShown = true;
       }
