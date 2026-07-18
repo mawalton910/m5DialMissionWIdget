@@ -135,9 +135,12 @@ namespace DisplayText {
     constexpr char TAP_TO_COMPLETE[] = "Tap to Complete";     // Completion prompt header
     constexpr char REWARD_LABEL[] = "Reward:";                // Reward label
     constexpr char TIMEOUT_TITLE[] = "TIME OUT";              // Timeout title
-    constexpr char TIMEOUT_ACTION[] = "Scan Completion";       // Timeout action line
+    constexpr char TIMEOUT_ACTION[] = "RETURN TO BASE";        // Timeout action line
     constexpr char COMPLETION_TITLE[] = "SCAN";               // Completion title when locked
     constexpr char COMPLETION_SUBTITLE[] = "MISSION COMPLETION"; // Completion subtitle when locked
+    constexpr char RETURN_TO_BASE[] = "RETURN TO BASE";        // Post-timeout field instruction
+    constexpr char NO_REWARD[] = "NO REWARD";                  // Timeout without gained difficulty
+    constexpr char CLAIM_REWARD[] = "CLAIM";                   // Timeout with gained difficulty
 
     // Timer overlay
     constexpr char TIMER_TITLE[] = "TIME LEFT";               // Timer overlay header
