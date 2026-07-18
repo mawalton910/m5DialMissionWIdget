@@ -55,6 +55,8 @@ const int SERIAL_LOG_LEVEL = SERIAL_LOG_FULL;
 // ===== API CONFIGURATION =====
 // Mission Mode endpoints
 const String API_ENDPOINT = String(MISSION_API_ENDPOINT);
+const String REWARD_ENDPOINT = String(MISSION_REWARD_ENDPOINT);
+const String WHATISIT_ENDPOINT = String(WHATISIT_ENDPOINT_URL);
 
 // Completion payload mode toggle:
 // false = legacy payload (no game_id)

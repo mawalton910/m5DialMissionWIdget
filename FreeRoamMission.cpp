@@ -377,6 +377,12 @@ int FreeRoamMission::findLocationForTag(const String& locationTag) const {
 
 void FreeRoamMission::updateDisplay() {
     const int cx = M5Dial.Display.width() / 2;  // 120
+    const bool vaultTheme = ACTIVE_UI_THEME == THEME_VAULT;
+    const uint16_t vaultBg = M5Dial.Display.color565(28, 12, 0);
+    const uint16_t vaultPanel = M5Dial.Display.color565(44, 20, 0);
+    const uint16_t vaultAccent = M5Dial.Display.color565(255, 150, 40);
+    const uint16_t vaultAccentHi = M5Dial.Display.color565(255, 190, 70);
+    const uint16_t vaultWarn = M5Dial.Display.color565(255, 90, 40);
 
     // ---- Handle encoder scroll (before dirty check) ----
     int enc   = M5Dial.Encoder.read();
@@ -413,8 +419,14 @@ void FreeRoamMission::updateDisplay() {
     String poiName  = displayNameForSpot(browseIndex);
     String missionHeader = sanitizeMissionHeaderName(stateManager.getActiveMissionName());
 
-    M5Dial.Lcd.fillScreen(TFT_BLACK);
+    M5Dial.Lcd.fillScreen(vaultTheme ? vaultBg : TFT_BLACK);
     M5Dial.Display.setTextDatum(MC_DATUM);
+    if (vaultTheme) {
+        // Keep scanlines away from screen edges to avoid visible top/bottom bars.
+        for (int y = 2; y < 238; y += 4) {
+            M5Dial.Display.drawFastHLine(0, y, 240, vaultPanel);
+        }
+    }
 
     // ---- Always-on mission timer (top) ----
     if (missionStartMs > 0) {
@@ -425,36 +437,39 @@ void FreeRoamMission::updateDisplay() {
         char tbuf[8];
         snprintf(tbuf, sizeof(tbuf), "%lu:%02lu", mins, secs);
         M5Dial.Display.setTextSize(2);
-        M5Dial.Display.setTextColor(remaining < 60000UL ? TFT_RED : TFT_YELLOW);
+        M5Dial.Display.setTextColor(vaultTheme ? (remaining < 60000UL ? vaultWarn : vaultAccentHi) : (remaining < 60000UL ? TFT_RED : TFT_YELLOW));
         M5Dial.Display.drawString(String(tbuf), cx, 15);
         M5Dial.Display.setTextSize(1);  // restore
     }
 
     // ---- Header (below timer) ----
     M5Dial.Display.setTextSize(1);
-    M5Dial.Display.setTextColor(TFT_CYAN);
-    M5Dial.Display.drawString("MISSION PROGRESS  " + String(visitedCount) + "/" + String(count), cx, 38);
+    M5Dial.Display.setTextColor(vaultTheme ? vaultAccentHi : TFT_CYAN);
+    M5Dial.Display.drawString(vaultTheme ? String("VAULT MISSION  ") + String(visitedCount) + "/" + String(count)
+                                         : String("MISSION PROGRESS  ") + String(visitedCount) + "/" + String(count),
+                             cx, 38);
 
     // ---- Progress pips ----
-    drawProgressPips(cx, M5Dial.Display.height() - 16, visitedCount, browseIndex);
+    int pipsY = vaultTheme ? (M5Dial.Display.height() - 30) : (M5Dial.Display.height() - 16);
+    drawProgressPips(cx, pipsY, visitedCount, browseIndex);
 
     const int maxW  = 190;
     const int nameCY = 123;
 
     if (isVisited) {
         M5Dial.Display.setTextSize(3);
-        for (int ox = -1; ox <= 1; ox++)
-            for (int oy = -1; oy <= 1; oy++)
-                if (ox != 0 || oy != 0) {
-                    M5Dial.Display.setTextColor(TFT_WHITE);
-                    M5Dial.Display.drawString("VISITED", cx + ox, 72 + oy);
-                }
-        M5Dial.Display.setTextColor(TFT_GREEN);
+        // Thin outline pass for cleaner title readability on the dial.
+        M5Dial.Display.setTextColor(vaultTheme ? vaultPanel : TFT_BLACK);
+        M5Dial.Display.drawString("VISITED", cx - 1, 72);
+        M5Dial.Display.drawString("VISITED", cx + 1, 72);
+        M5Dial.Display.drawString("VISITED", cx, 71);
+        M5Dial.Display.drawString("VISITED", cx, 73);
+        M5Dial.Display.setTextColor(vaultTheme ? vaultAccentHi : TFT_GREEN);
         M5Dial.Display.drawString("VISITED", cx, 72);
 
-        M5Dial.Display.drawLine(40, 93, 200, 93, TFT_DARKGREY);
+        M5Dial.Display.drawLine(40, 93, 200, 93, vaultTheme ? vaultPanel : TFT_DARKGREY);
 
-        M5Dial.Display.setTextColor(TFT_GREEN);
+        M5Dial.Display.setTextColor(vaultTheme ? vaultAccentHi : TFT_GREEN);
         if ((int)poiName.length() > 15) {
             int splitPos = 15;
             for (int k = 14; k >= 0; k--) { if (poiName[k] == ' ') { splitPos = k; break; } }
@@ -468,11 +483,11 @@ void FreeRoamMission::updateDisplay() {
         }
 
         M5Dial.Display.setTextSize(1);
-        M5Dial.Display.setTextColor(TFT_DARKGREY);
+        M5Dial.Display.setTextColor(vaultTheme ? vaultAccent : TFT_DARKGREY);
         String navV = "< " + String(browseIndex + 1) + "/" + String(count) + " >";
         M5Dial.Display.drawString(navV, cx, M5Dial.Display.height() - 50);
 
-        M5Dial.Display.setTextColor(TFT_GREEN);
+        M5Dial.Display.setTextColor(vaultTheme ? vaultAccentHi : TFT_GREEN);
         M5Dial.Display.drawString("[ VISITED ]", cx, M5Dial.Display.height() - 33);
 
     } else {
@@ -483,16 +498,16 @@ void FreeRoamMission::updateDisplay() {
             headerSize--;
             M5Dial.Display.setTextSize(headerSize);
         }
-        for (int ox = -1; ox <= 1; ox++)
-            for (int oy = -1; oy <= 1; oy++)
-                if (ox != 0 || oy != 0) {
-                    M5Dial.Display.setTextColor(TFT_WHITE);
-                    M5Dial.Display.drawString(headerLabel, cx + ox, 72 + oy);
-                }
-        M5Dial.Display.setTextColor(TFT_ORANGE);
+        // Thin 1px border around mission title for legibility.
+        M5Dial.Display.setTextColor(vaultTheme ? vaultPanel : TFT_BLACK);
+        M5Dial.Display.drawString(headerLabel, cx - 1, 72);
+        M5Dial.Display.drawString(headerLabel, cx + 1, 72);
+        M5Dial.Display.drawString(headerLabel, cx, 71);
+        M5Dial.Display.drawString(headerLabel, cx, 73);
+        M5Dial.Display.setTextColor(vaultTheme ? TFT_WHITE : TFT_ORANGE);
         M5Dial.Display.drawString(headerLabel, cx, 72);
 
-        M5Dial.Display.drawLine(40, 93, 200, 93, TFT_DARKGREY);
+        M5Dial.Display.drawLine(40, 93, 200, 93, vaultTheme ? vaultPanel : TFT_DARKGREY);
 
         M5Dial.Display.setTextColor(TFT_WHITE);
         if ((int)poiName.length() > 15) {
@@ -508,12 +523,19 @@ void FreeRoamMission::updateDisplay() {
         }
 
         M5Dial.Display.setTextSize(1);
-        M5Dial.Display.setTextColor(TFT_DARKGREY);
+        M5Dial.Display.setTextColor(vaultTheme ? vaultAccent : TFT_DARKGREY);
         String navV = "< " + String(browseIndex + 1) + "/" + String(count) + " >";
         M5Dial.Display.drawString(navV, cx, M5Dial.Display.height() - 50);
     }
 
     M5Dial.Display.setTextSize(1);
-    M5Dial.Display.setTextColor(TFT_YELLOW);
+    M5Dial.Display.setTextColor(vaultTheme ? vaultAccentHi : TFT_YELLOW);
     M5Dial.Display.drawString("Reward: " + getCurrentDifficulty(), cx, 53);
+    if (vaultTheme) {
+        // Keep this helper above the bezel edge and high-contrast against scanlines.
+        M5Dial.Display.setTextColor(TFT_WHITE);
+        M5Dial.Display.setTextSize(2);
+        M5Dial.Display.drawString("HOLD 3S: CONTROL", cx, 224);
+        M5Dial.Display.setTextSize(1);
+    }
 }

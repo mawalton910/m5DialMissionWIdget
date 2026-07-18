@@ -41,12 +41,15 @@ public:
     const char* KEY_SAVED_TRACKER_STATE = "saved_state";
     const char* KEY_SAVED_MISSION_START = "saved_ms_start";
     const char* KEY_MISSION_START_TIME = "mission_start_ms";
+    const char* KEY_MISSION_TIMEOUT_MS = "mission_tmout";
     const char* KEY_LOCKED_DIFFICULTY = "locked_difficulty";
     const char* KEY_WIFI_SSID = "wifi_ssid";
     const char* KEY_WIFI_PASSWORD = "wifi_password";
     const char* KEY_OPERATIONAL_MODE = "op_mode";
     const char* KEY_STORY_NPC_TOKEN = "story_npc_tag";
     const char* KEY_STORY_NPC_NAME = "story_npc_name";
+    const char* KEY_STORY_NPC_LOOT_ID = "story_npc_loot";
+    const char* KEY_STORY_NPC_REWARDS = "story_npc_rwds";
     const char* KEY_ACTIVE_MISSION_NAME = "mission_name";
     // ...existing code...
     
@@ -139,6 +142,18 @@ public:
         prefs.remove(KEY_MISSION_START_TIME);
     }
 
+    void setMissionTimeoutMs(unsigned long ms) {
+        prefs.putULong(KEY_MISSION_TIMEOUT_MS, ms);
+    }
+
+    unsigned long getMissionTimeoutMs() {
+        return prefs.getULong(KEY_MISSION_TIMEOUT_MS, 0);
+    }
+
+    void clearMissionTimeoutMs() {
+        prefs.remove(KEY_MISSION_TIMEOUT_MS);
+    }
+
     void clearLockedDifficulty() {
         prefs.remove(KEY_LOCKED_DIFFICULTY);
     }
@@ -227,6 +242,30 @@ public:
 
     void clearStoryNpcName() {
         prefs.remove(KEY_STORY_NPC_NAME);
+    }
+
+    void setStoryNpcLootId(const String& lootId) {
+        prefs.putString(KEY_STORY_NPC_LOOT_ID, lootId.c_str());
+    }
+
+    String getStoryNpcLootId() {
+        return prefs.getString(KEY_STORY_NPC_LOOT_ID, "");
+    }
+
+    void clearStoryNpcLootId() {
+        prefs.remove(KEY_STORY_NPC_LOOT_ID);
+    }
+
+    void setStoryNpcRewardSpec(const String& rewardSpec) {
+        prefs.putString(KEY_STORY_NPC_REWARDS, rewardSpec.c_str());
+    }
+
+    String getStoryNpcRewardSpec() {
+        return prefs.getString(KEY_STORY_NPC_REWARDS, "");
+    }
+
+    void clearStoryNpcRewardSpec() {
+        prefs.remove(KEY_STORY_NPC_REWARDS);
     }
 
     void setActiveMissionName(const String& missionName) {
