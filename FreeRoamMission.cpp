@@ -430,8 +430,10 @@ void FreeRoamMission::updateDisplay() {
 
     // ---- Always-on mission timer (top) ----
     if (missionStartMs > 0) {
+        unsigned long timeoutMs = stateManager.getMissionTimeoutMs();
+        if (timeoutMs == 0UL) timeoutMs = MISSION_TIMEOUT_MS;
         unsigned long elapsed   = millis() - missionStartMs;
-        unsigned long remaining = (elapsed >= MISSION_TIMEOUT_MS) ? 0UL : (MISSION_TIMEOUT_MS - elapsed);
+        unsigned long remaining = (elapsed >= timeoutMs) ? 0UL : (timeoutMs - elapsed);
         unsigned long mins = remaining / 60000UL;
         unsigned long secs = (remaining / 1000UL) % 60UL;
         char tbuf[8];

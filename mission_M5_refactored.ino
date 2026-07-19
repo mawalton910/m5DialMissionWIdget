@@ -664,9 +664,46 @@ public:
       int comma = badgeUID.indexOf(',', start);
       String tok = (comma == -1) ? badgeUID.substring(start) : badgeUID.substring(start, comma);
       tok.trim();
+      tok = normalizeRfidToken(tok);
       if (tok.length() > 0) playerUUIDs[playerCount++] = tok;
       if (comma == -1) break;
       start = comma + 1;
+    }
+
+    if (playerCount == 0) {
+      Serial.printf("[STATE] %lums  Snapshot had no valid player UUIDs; clearing stale session\n", millis());
+      stateManager.setPlayerUUID("");
+      stateManager.clearSavedTrackerState();
+      stateManager.clearSavedMissionStart();
+      stateManager.clearMissionStartTime();
+      stateManager.clearLockedDifficulty();
+      stateManager.setSelectedLocations("");
+      stateManager.setVisitedCount(0);
+      return false;
+    }
+
+    bool staleBadgeOnlySnapshot = (restoredState == WAIT_FOR_BADGE)
+      && missionCardUID.length() == 0
+      && selectedLocs.length() == 0
+      && restoredStartTime == 0
+      && restoredLockedDiff.length() == 0;
+    if (staleBadgeOnlySnapshot) {
+      Serial.printf("[STATE] %lums  Ignoring stale WAIT_FOR_BADGE snapshot and resetting roster\n", millis());
+      for (int i = 0; i < MAX_PLAYERS; i++) playerUUIDs[i] = "";
+      playerCount = 0;
+      currentBadgeUID = "";
+      stateManager.setPlayerUUID("");
+      stateManager.clearSavedTrackerState();
+      stateManager.clearSavedMissionStart();
+      stateManager.clearMissionStartTime();
+      stateManager.clearLockedDifficulty();
+      stateManager.setSelectedLocations("");
+      stateManager.setVisitedCount(0);
+      trackerState = stateManager.hasStoryNpcToken() ? WAIT_FOR_BADGE : WAIT_FOR_NPC_TOKEN;
+      waitingForBadge = trackerState == WAIT_FOR_BADGE;
+      if (waitingForBadge) displayScanBadge();
+      else displayScanNpcToken();
+      return false;
     }
 
     currentBadgeUID       = (playerCount > 0) ? playerUUIDs[0] : "";
@@ -2254,12 +2291,61 @@ private:
     return name;
   }
 
+  static long long daysFromCivil(int y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (long long)era * 146097LL + (long long)doe - 719468LL;
+  }
+
+  static bool parseIsoUtcToEpochMs(const String& isoText, unsigned long& outMs) {
+    if (isoText.length() < 19) return false;
+
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    int parsed = sscanf(isoText.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &year, &month, &day, &hour, &minute, &second);
+    if (parsed != 6) return false;
+    if (month < 1 || month > 12) return false;
+    if (day < 1 || day > 31) return false;
+    if (hour < 0 || hour > 23) return false;
+    if (minute < 0 || minute > 59) return false;
+    if (second < 0 || second > 60) return false;
+
+    long long days = daysFromCivil(year, (unsigned)month, (unsigned)day);
+    long long sec = days * 86400LL + (long long)hour * 3600LL + (long long)minute * 60LL + (long long)second;
+    if (sec < 0) return false;
+
+    long long ms = sec * 1000LL;
+    if (ms < 0 || ms > 0xFFFFFFFFLL) return false;
+    outMs = (unsigned long)ms;
+    return true;
+  }
+
+  static bool deriveRoundDurationFromIso(const String& startIso, const String& endIso, unsigned long& outDurationMs) {
+    unsigned long startMs = 0;
+    unsigned long endMs = 0;
+    if (!parseIsoUtcToEpochMs(startIso, startMs)) return false;
+    if (!parseIsoUtcToEpochMs(endIso, endMs)) return false;
+    if (endMs <= startMs) return false;
+    outDurationMs = endMs - startMs;
+    return true;
+  }
+
   static unsigned long sanitizeMissionTimeoutMs(unsigned long candidateMs) {
     const unsigned long minMs = 1UL * 60UL * 1000UL;
     const unsigned long maxMs = 120UL * 60UL * 1000UL;
     if (candidateMs < minMs) return MISSION_TIMEOUT_MS;
     if (candidateMs > maxMs) return maxMs;
     return candidateMs;
+  }
+
+  static unsigned long missionTimeoutWithGraceMs(unsigned long timeoutMs) {
+    const unsigned long graceMs = 5000UL;
+    const unsigned long maxMs = 120UL * 60UL * 1000UL;
+    if (timeoutMs >= maxMs) return maxMs;
+    if (timeoutMs > (maxMs - graceMs)) return maxMs;
+    return timeoutMs + graceMs;
   }
 
   unsigned long effectiveMissionTimeoutMs() const {
@@ -2301,8 +2387,9 @@ private:
     serializeJson(payload, body);
 
     HTTPClient http;
-    http.setTimeout(HTTP_TIMEOUT);
-    http.setConnectTimeout(HTTP_TIMEOUT);
+    const int storyTimeoutMs = max(HTTP_TIMEOUT, 12000);
+    http.setTimeout(storyTimeoutMs);
+    http.setConnectTimeout(storyTimeoutMs);
     http.begin(REWARD_ENDPOINT);
     http.addHeader("Content-Type", "application/json");
     int code = http.POST(body);
@@ -2688,6 +2775,10 @@ private:
       displayMultiLineMessage("DEVICE ROUTE", "NOT FOUND", COLOR_WARNING);
     } else if (reasonCode == "ROUND_NOT_READY") {
       displayMultiLineMessage("ROUND NOT", "READY", COLOR_WARNING);
+    } else if (reasonCode == "EMPTY_MANIFEST_BODY") {
+      displayMultiLineMessage("EMPTY ROUND", "RETRY", COLOR_WARNING);
+    } else if (reasonCode == "MANIFEST_TOO_LARGE") {
+      displayMultiLineMessage("ROUND TOO", "LARGE", COLOR_WARNING);
     } else {
       displayMultiLineMessage("STORY FETCH", "FAILED", COLOR_WARNING);
     }
@@ -2775,18 +2866,15 @@ private:
     unsigned long requestStartedAt = millis();
     int code = http.POST(payload);
     String response = code > 0 ? http.getString() : "";
-    http.end();
-
+    int responseBytes = response.length();
     Serial.printf("[STORY] %lums  Manifest response HTTP %d in %lums (%d bytes)\n",
-                  millis(), code, millis() - requestStartedAt, response.length());
-    if (response.length() > 0) {
-      logLongSerial("[STORY RAW RESPONSE]", response);
-    }
+                  millis(), code, millis() - requestStartedAt, responseBytes);
     if (code < 0) {
       Serial.printf("[STORY] HTTP error detail: %s\n", HTTPClient::errorToString(code).c_str());
       logNetworkSnapshot("Story round POST failure", STORY_ROUND_ENDPOINT);
     }
     if (code != 200) {
+      http.end();
       String serverCode;
       String serverMessage;
       if (response.length() > 0) {
@@ -2820,11 +2908,84 @@ private:
       return;
     }
 
-    DynamicJsonDocument manifest(12288);
-    DeserializationError parseError = deserializeJson(manifest, response);
+    if (responseBytes == 0) {
+      http.end();
+      Serial.println("[STORY] Empty body returned for HTTP 200");
+      logger.log("Story manifest empty body");
+      recoverFromStoryRoundError("EMPTY_MANIFEST_BODY", automaticFreeRoam);
+      return;
+    }
+
+    DynamicJsonDocument filter(2048);
+    filter["ok"] = true;
+    JsonObject deviceFilter = filter.createNestedObject("device");
+    deviceFilter["requested_game_id"] = true;
+    deviceFilter["resolved_game_id"] = true;
+    deviceFilter["game_id_matches_request"] = true;
+    deviceFilter["widget_id"] = true;
+    deviceFilter["active_minigame_id"] = true;
+
+    JsonObject sourceFilter = filter.createNestedObject("source");
+    sourceFilter["mission_uuid"] = true;
+    sourceFilter["source_uuid"] = true;
+    sourceFilter["npc_name"] = true;
+    sourceFilter["npc_public_id"] = true;
+    sourceFilter["npc_id"] = true;
+    sourceFilter["story_keyword"] = true;
+
+    JsonObject roundFilter = filter.createNestedObject("round");
+    roundFilter["round_key"] = true;
+    roundFilter["name"] = true;
+    roundFilter["type"] = true;
+    roundFilter["start_time"] = true;
+    roundFilter["end_time"] = true;
+    roundFilter["duration_ms"] = true;
+    roundFilter["duration_minutes"] = true;
+
+    JsonObject missionFilter = filter.createNestedObject("mission");
+    missionFilter["id"] = true;
+    missionFilter["name"] = true;
+    missionFilter["source_chain_id"] = true;
+    JsonObject missionMetaFilter = missionFilter.createNestedObject("metadata");
+    missionMetaFilter["type"] = true;
+    missionMetaFilter["category"] = true;
+    missionMetaFilter["expected_duration"] = true;
+    missionMetaFilter["difficulty"] = true;
+
+    JsonObject dialInitFilter = filter.createNestedObject("dial_init");
+    dialInitFilter["required_poi_count"] = true;
+    dialInitFilter["max_supported_poi_count"] = true;
+    dialInitFilter["variable_poi_count"] = true;
+
+    JsonObject debugFilter = filter.createNestedObject("debug");
+    JsonArray missingPoisArrayFilter = debugFilter.createNestedArray("missing_uuid_pois");
+    JsonObject missingPoisFilter = missingPoisArrayFilter.createNestedObject();
+    missingPoisFilter["poi_id"] = true;
+    missingPoisFilter["poi_name"] = true;
+    missingPoisFilter["order"] = true;
+
+    JsonArray poisArrayFilter = filter.createNestedArray("pois");
+    JsonObject poisFilter = poisArrayFilter.createNestedObject();
+    poisFilter["name"] = true;
+    poisFilter["uuid"] = true;
+
+    filter["route"] = true;
+    filter["server_time"] = true;
+
+    DynamicJsonDocument manifest(10240);
+    DeserializationError parseError = deserializeJson(manifest, response, DeserializationOption::Filter(filter));
+    http.end();
     if (parseError || !manifest["ok"].as<bool>()) {
       Serial.printf("[STORY] Manifest parse/error: %s\n", parseError ? parseError.c_str() : "ok=false");
       logger.log("Story manifest parse failed");
+      if (parseError == DeserializationError::NoMemory) {
+        recoverFromStoryRoundError("MANIFEST_TOO_LARGE", automaticFreeRoam);
+        return;
+      }
+      if (parseError == DeserializationError::IncompleteInput) {
+        recoverFromStoryRoundError("EMPTY_MANIFEST_BODY", automaticFreeRoam);
+        return;
+      }
       displayError("BAD STORY DATA");
       delay(1800);
       if (automaticFreeRoam) displayScanBadge();
@@ -2860,15 +3021,23 @@ private:
                   (const char*)(missionCtx["name"] | ""),
                   (const char*)(missionCtx["source_chain_id"] | ""));
 
-    unsigned long roundDurationMs = roundCtx["duration_ms"] | 0UL;
-    if (roundDurationMs == 0UL) {
-      unsigned long roundDurationMinutes = roundCtx["duration_minutes"] | 0UL;
-      if (roundDurationMinutes > 0UL) {
-        roundDurationMs = roundDurationMinutes * 60UL * 1000UL;
+    unsigned long roundDurationMs = 0UL;
+    String roundStartIso = roundCtx["start_time"].as<String>();
+    String roundEndIso = roundCtx["end_time"].as<String>();
+    bool hasIsoDuration = deriveRoundDurationFromIso(roundStartIso, roundEndIso, roundDurationMs);
+    if (!hasIsoDuration) {
+      roundDurationMs = roundCtx["duration_ms"] | 0UL;
+      if (roundDurationMs == 0UL) {
+        unsigned long roundDurationMinutes = roundCtx["duration_minutes"] | 0UL;
+        if (roundDurationMinutes > 0UL) {
+          roundDurationMs = roundDurationMinutes * 60UL * 1000UL;
+        }
       }
     }
-    activeMissionTimeoutMs = sanitizeMissionTimeoutMs(roundDurationMs);
+    activeMissionTimeoutMs = missionTimeoutWithGraceMs(sanitizeMissionTimeoutMs(roundDurationMs));
     stateManager.setMissionTimeoutMs(activeMissionTimeoutMs);
+    Serial.printf("[STORY CONTEXT] mission timeout source: %s\n", hasIsoDuration ? "round.start_time/end_time" : "round.duration_ms/minutes");
+    Serial.printf("[STORY CONTEXT] mission timeout grace: +5 seconds\n");
     Serial.printf("[STORY CONTEXT] mission timeout: %lu minutes\n", activeMissionTimeoutMs / 60000UL);
     Serial.printf("[STORY CONTEXT] dial_required=%d dial_max=%d variable=%s missing_uuid_pois=%u\n",
                   (int)(dialInit["required_poi_count"] | 0),
